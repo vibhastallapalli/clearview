@@ -1,4 +1,4 @@
-import type { ApiError, Order, OrderDetail } from "@cleardock/shared";
+import type { ApiError, Order, OrderDetail, PaymentTransaction, PublicConfig } from "@cleardock/shared";
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   let res: Response;
@@ -21,6 +21,7 @@ const json = (body: unknown): RequestInit => ({
 export type OrderRow = Order & { supplierName?: string };
 
 export const api = {
+  config: () => request<PublicConfig>("/api/config"),
   health: () => request<{ ok: boolean; ai: "gemini" | "mock" }>("/api/health"),
   orders: () => request<OrderRow[]>("/api/orders"),
   order: (id: string) => request<OrderDetail>(`/api/orders/${id}`),
@@ -55,6 +56,18 @@ export const api = {
 
   preparePayment: (orderId: string) =>
     request<OrderDetail>(`/api/orders/${orderId}/payments`, { method: "POST" }),
+
+  // Unsigned transfer for the connected wallet to sign. The server never signs.
+  paymentTransaction: (orderId: string, payer: string) =>
+    request<PaymentTransaction>(`/api/orders/${orderId}/payments/transaction`, json({ payer })),
+
+  // The wallet only signs; the server checks the signed bytes, records the signature, then broadcasts.
+  submitPayment: (orderId: string, transaction: string) =>
+    request<OrderDetail>(`/api/orders/${orderId}/payments/submit`, json({ transaction })),
+
+  // Verifies the landed transaction on devnet. Same signature again = re-check.
+  confirmPayment: (orderId: string, signature: string) =>
+    request<OrderDetail>(`/api/orders/${orderId}/payments/confirm`, json({ signature })),
 
   reset: () => request("/api/dev/reset", { method: "POST" }),
 };
