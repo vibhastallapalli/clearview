@@ -1,0 +1,22 @@
+[package]
+name = "escrow"
+version = "0.1.0"
+description = "ClearDock order escrow (devnet)"
+edition = "2021"
+rust-version = "1.75"
+
+[lib]
+crate-type = ["cdylib", "lib"]
+name = "escrow"
+
+[features]
+default = []
+cpi = ["no-entrypoint"]
+no-entrypoint = []
+no-idl = []
+no-log-ix-name = []
+idl-build = ["anchor-lang/idl-build", "anchor-spl/idl-build"]
+
+[dependencies]
+anchor-lang = "0.30.1"
+anchor-spl = "0.30.1"
