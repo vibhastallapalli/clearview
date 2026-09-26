@@ -1,199 +1,215 @@
 use anchor_lang::prelude::*;
-use anchor_spl::token::{self, Mint, Token, TokenAccount, Transfer};
+use anchor_spl::token::{self, Mint, Token, TokenAccount, TransferChecked};
 
-declare_id!("Escrow11111111111111111111111111111111111");
+declare_id!("2tVuzMGuXEX6ZcvBdDroKr163z3Y8B7fJubwGuqUBv4J");
 
-/// ClearDock order escrow (Phase 2, devnet only).
-///
-/// Rules (docs/escrow-rulebook.md): only signatures move money. A claim can
-/// lock disputed funds but never refunds itself; only `settle`, signed by
-/// both buyer and supplier, can release claimed/locked funds to either side.
+pub const ESCROW_SEED: &[u8] = b"escrow";
+pub const VAULT_SEED: &[u8] = b"vault";
+
+/// ClearDock order escrow (devnet). Rules: docs/escrow-rulebook.md.
+/// Only signatures move money: the buyer can accept or claim alone, but held
+/// (claimed) funds leave the vault only through `settle`, signed by both parties.
 #[program]
 pub mod escrow {
     use super::*;
 
-    /// Buyer signs. Locks `amount` of `mint` in a program-owned vault for
-    /// `supplier`. `order_id_hash` is a sha256 of the order reference used
-    /// as a PDA seed so one buyer can fund multiple orders concurrently.
+    /// Buyer locks `amount` of `mint` for `supplier`. `order_id_hash` is
+    /// sha256(order reference) and seeds the escrow PDA.
     pub fn fund(
         ctx: Context<Fund>,
         order_id_hash: [u8; 32],
         amount: u64,
-        supplier: Pubkey,
         terms_hash: [u8; 32],
     ) -> Result<()> {
         require!(amount > 0, EscrowError::InvalidAmount);
+        require_keys_neq!(
+            ctx.accounts.buyer.key(),
+            ctx.accounts.supplier.key(),
+            EscrowError::BuyerIsSupplier
+        );
 
-        token::transfer(
+        token::transfer_checked(
             CpiContext::new(
                 ctx.accounts.token_program.to_account_info(),
-                Transfer {
+                TransferChecked {
                     from: ctx.accounts.buyer_token_account.to_account_info(),
+                    mint: ctx.accounts.mint.to_account_info(),
                     to: ctx.accounts.vault.to_account_info(),
                     authority: ctx.accounts.buyer.to_account_info(),
                 },
             ),
             amount,
+            ctx.accounts.mint.decimals,
         )?;
 
-        let escrow = &mut ctx.accounts.escrow;
-        escrow.buyer = ctx.accounts.buyer.key();
-        escrow.supplier = supplier;
-        escrow.mint = ctx.accounts.mint.key();
-        escrow.vault = ctx.accounts.vault.key();
-        escrow.order_id_hash = order_id_hash;
-        escrow.terms_hash = terms_hash;
-        escrow.total_amount = amount;
-        escrow.released_amount = 0;
-        escrow.claimed_amount = 0;
-        escrow.refunded_amount = 0;
-        escrow.status = EscrowStatus::Funded;
-        escrow.bump = ctx.bumps.escrow;
+        ctx.accounts.escrow.set_inner(Escrow {
+            buyer: ctx.accounts.buyer.key(),
+            supplier: ctx.accounts.supplier.key(),
+            mint: ctx.accounts.mint.key(),
+            vault: ctx.accounts.vault.key(),
+            order_id_hash,
+            terms_hash,
+            total_amount: amount,
+            released_amount: 0,
+            claimed_amount: 0,
+            refunded_amount: 0,
+            status: EscrowStatus::Funded,
+            bump: ctx.bumps.escrow,
+        });
+
+        msg!("ClearDock escrow funded: {} held for supplier {}", amount, ctx.accounts.supplier.key());
         Ok(())
     }
 
-    /// Buyer signs only. Releases the entire remaining vault balance to the
-    /// stored supplier. Fails for any other signer or if funds already moved.
-    pub fn accept_all(ctx: Context<ReleaseToSupplier>) -> Result<()> {
-        let escrow = &ctx.accounts.escrow;
-        require!(escrow.status == EscrowStatus::Funded, EscrowError::InvalidStatus);
+    /// Buyer accepts the whole delivery: everything goes to the stored supplier.
+    pub fn accept_all(ctx: Context<Release>) -> Result<()> {
+        let accounts = &ctx.accounts;
+        require!(accounts.escrow.status == EscrowStatus::Funded, EscrowError::InvalidStatus);
+        let amount = accounts.escrow.locked()?;
 
-        let amount = ctx.accounts.vault.amount;
-        require!(amount > 0, EscrowError::InvalidAmount);
-
-        let seeds = escrow_signer_seeds(escrow);
-        token::transfer(
-            CpiContext::new_with_signer(
-                ctx.accounts.token_program.to_account_info(),
-                Transfer {
-                    from: ctx.accounts.vault.to_account_info(),
-                    to: ctx.accounts.supplier_token_account.to_account_info(),
-                    authority: ctx.accounts.escrow.to_account_info(),
-                },
-                &[&seeds[..]],
-            ),
+        pay_from_vault(
+            &accounts.token_program,
+            &accounts.mint,
+            &accounts.vault,
+            &accounts.supplier_token_account,
+            &accounts.escrow,
             amount,
         )?;
 
         let escrow = &mut ctx.accounts.escrow;
-        escrow.released_amount += amount;
+        escrow.released_amount = checked_add(escrow.released_amount, amount)?;
         escrow.status = EscrowStatus::Released;
+
+        msg!("ClearDock escrow: buyer accepted all, released {} to supplier", amount);
         Ok(())
     }
 
-    /// Buyer signs. Releases `accepted_amount` to the supplier now and keeps
-    /// `claimed_amount` locked pending settlement. The two must exactly
-    /// account for the remaining vault balance.
-    pub fn claim(ctx: Context<Claim>, accepted_amount: u64, claimed_amount: u64) -> Result<()> {
-        let remaining = ctx.accounts.vault.amount;
+    /// Buyer accepts some lines and disputes the rest: `accepted_amount` pays the
+    /// supplier now, `claimed_amount` stays held until both parties settle.
+    pub fn claim(ctx: Context<Release>, accepted_amount: u64, claimed_amount: u64) -> Result<()> {
+        let accounts = &ctx.accounts;
+        require!(accounts.escrow.status == EscrowStatus::Funded, EscrowError::InvalidStatus);
+        require!(claimed_amount > 0, EscrowError::InvalidAmount);
         require!(
-            accepted_amount
-                .checked_add(claimed_amount)
-                .ok_or(EscrowError::InvalidAmount)?
-                == remaining,
+            checked_add(accepted_amount, claimed_amount)? == accounts.escrow.locked()?,
             EscrowError::AmountMismatch
         );
-        {
-            let escrow = &ctx.accounts.escrow;
-            require!(escrow.status == EscrowStatus::Funded, EscrowError::InvalidStatus);
-        }
 
-        if accepted_amount > 0 {
-            let seeds = escrow_signer_seeds(&ctx.accounts.escrow);
-            token::transfer(
-                CpiContext::new_with_signer(
-                    ctx.accounts.token_program.to_account_info(),
-                    Transfer {
-                        from: ctx.accounts.vault.to_account_info(),
-                        to: ctx.accounts.supplier_token_account.to_account_info(),
-                        authority: ctx.accounts.escrow.to_account_info(),
-                    },
-                    &[&seeds[..]],
-                ),
-                accepted_amount,
-            )?;
-        }
+        pay_from_vault(
+            &accounts.token_program,
+            &accounts.mint,
+            &accounts.vault,
+            &accounts.supplier_token_account,
+            &accounts.escrow,
+            accepted_amount,
+        )?;
 
         let escrow = &mut ctx.accounts.escrow;
-        escrow.released_amount += accepted_amount;
+        escrow.released_amount = checked_add(escrow.released_amount, accepted_amount)?;
         escrow.claimed_amount = claimed_amount;
         escrow.status = EscrowStatus::Claimed;
+
+        msg!(
+            "ClearDock escrow: released {} to supplier, {} held pending a settlement both sign",
+            accepted_amount,
+            claimed_amount
+        );
         Ok(())
     }
 
-    /// Requires BOTH buyer and supplier signatures on the same transaction.
-    /// `to_supplier + to_buyer` must equal the currently locked claimed
-    /// amount exactly. Pays out both parts in one instruction; each order
-    /// can only be settled once (status guard below).
+    /// Executes a settlement both parties signed. The split must account for
+    /// every held unit, and an escrow can only be settled once.
     pub fn settle(ctx: Context<Settle>, to_supplier: u64, to_buyer: u64) -> Result<()> {
-        let escrow = &ctx.accounts.escrow;
-        require!(escrow.status == EscrowStatus::Claimed, EscrowError::InvalidStatus);
+        let accounts = &ctx.accounts;
+        require!(accounts.escrow.status == EscrowStatus::Claimed, EscrowError::InvalidStatus);
         require!(
-            to_supplier
-                .checked_add(to_buyer)
-                .ok_or(EscrowError::InvalidAmount)?
-                == escrow.claimed_amount,
+            checked_add(to_supplier, to_buyer)? == accounts.escrow.locked()?,
             EscrowError::AmountMismatch
         );
 
-        let seeds = escrow_signer_seeds(escrow);
-
-        if to_supplier > 0 {
-            token::transfer(
-                CpiContext::new_with_signer(
-                    ctx.accounts.token_program.to_account_info(),
-                    Transfer {
-                        from: ctx.accounts.vault.to_account_info(),
-                        to: ctx.accounts.supplier_token_account.to_account_info(),
-                        authority: ctx.accounts.escrow.to_account_info(),
-                    },
-                    &[&seeds[..]],
-                ),
-                to_supplier,
-            )?;
-        }
-
-        if to_buyer > 0 {
-            token::transfer(
-                CpiContext::new_with_signer(
-                    ctx.accounts.token_program.to_account_info(),
-                    Transfer {
-                        from: ctx.accounts.vault.to_account_info(),
-                        to: ctx.accounts.buyer_token_account.to_account_info(),
-                        authority: ctx.accounts.escrow.to_account_info(),
-                    },
-                    &[&seeds[..]],
-                ),
-                to_buyer,
-            )?;
-        }
+        pay_from_vault(
+            &accounts.token_program,
+            &accounts.mint,
+            &accounts.vault,
+            &accounts.supplier_token_account,
+            &accounts.escrow,
+            to_supplier,
+        )?;
+        pay_from_vault(
+            &accounts.token_program,
+            &accounts.mint,
+            &accounts.vault,
+            &accounts.buyer_token_account,
+            &accounts.escrow,
+            to_buyer,
+        )?;
 
         let escrow = &mut ctx.accounts.escrow;
-        escrow.released_amount += to_supplier;
-        escrow.refunded_amount += to_buyer;
-        escrow.claimed_amount = 0;
+        escrow.released_amount = checked_add(escrow.released_amount, to_supplier)?;
+        escrow.refunded_amount = checked_add(escrow.refunded_amount, to_buyer)?;
         escrow.status = EscrowStatus::Settled;
+
+        msg!(
+            "ClearDock escrow settled by buyer and supplier: {} to supplier, {} back to buyer",
+            to_supplier,
+            to_buyer
+        );
         Ok(())
     }
 }
 
-fn escrow_signer_seeds(escrow: &Account<Escrow>) -> [Vec<u8>; 4] {
-    [
-        b"escrow".to_vec(),
-        escrow.buyer.as_ref().to_vec(),
-        escrow.order_id_hash.to_vec(),
-        vec![escrow.bump],
-    ]
+fn pay_from_vault<'info>(
+    token_program: &Program<'info, Token>,
+    mint: &Account<'info, Mint>,
+    vault: &Account<'info, TokenAccount>,
+    destination: &Account<'info, TokenAccount>,
+    escrow: &Account<'info, Escrow>,
+    amount: u64,
+) -> Result<()> {
+    if amount == 0 {
+        return Ok(());
+    }
+    let bump = [escrow.bump];
+    let seeds: [&[u8]; 4] = [ESCROW_SEED, escrow.buyer.as_ref(), &escrow.order_id_hash, &bump];
+    token::transfer_checked(
+        CpiContext::new_with_signer(
+            token_program.to_account_info(),
+            TransferChecked {
+                from: vault.to_account_info(),
+                mint: mint.to_account_info(),
+                to: destination.to_account_info(),
+                authority: escrow.to_account_info(),
+            },
+            &[&seeds[..]],
+        ),
+        amount,
+        mint.decimals,
+    )
+}
+
+fn checked_add(a: u64, b: u64) -> Result<u64> {
+    a.checked_add(b).ok_or_else(|| error!(EscrowError::Overflow))
 }
 
 #[derive(Accounts)]
 #[instruction(order_id_hash: [u8; 32])]
 pub struct Fund<'info> {
+    #[account(mut)]
+    pub buyer: Signer<'info>,
+
+    /// CHECK: only this address is stored as the payout recipient; it does not sign or hold data.
+    pub supplier: UncheckedAccount<'info>,
+
+    pub mint: Account<'info, Mint>,
+
+    #[account(mut, token::mint = mint, token::authority = buyer)]
+    pub buyer_token_account: Account<'info, TokenAccount>,
+
     #[account(
         init,
         payer = buyer,
-        space = Escrow::SIZE,
-        seeds = [b"escrow", buyer.key().as_ref(), order_id_hash.as_ref()],
+        space = 8 + Escrow::INIT_SPACE,
+        seeds = [ESCROW_SEED, buyer.key().as_ref(), order_id_hash.as_ref()],
         bump
     )]
     pub escrow: Account<'info, Escrow>,
@@ -203,35 +219,32 @@ pub struct Fund<'info> {
         payer = buyer,
         token::mint = mint,
         token::authority = escrow,
-        seeds = [b"vault", escrow.key().as_ref()],
+        seeds = [VAULT_SEED, escrow.key().as_ref()],
         bump
     )]
     pub vault: Account<'info, TokenAccount>,
 
-    pub mint: Account<'info, Mint>,
-
-    #[account(mut, constraint = buyer_token_account.mint == mint.key())]
-    pub buyer_token_account: Account<'info, TokenAccount>,
-
-    #[account(mut)]
-    pub buyer: Signer<'info>,
-
     pub token_program: Program<'info, Token>,
     pub system_program: Program<'info, System>,
-    pub rent: Sysvar<'info, Rent>,
 }
 
 #[derive(Accounts)]
-pub struct ReleaseToSupplier<'info> {
+pub struct Release<'info> {
     #[account(
         mut,
-        has_one = buyer,
-        seeds = [b"escrow", escrow.buyer.as_ref(), escrow.order_id_hash.as_ref()],
-        bump = escrow.bump
+        seeds = [ESCROW_SEED, escrow.buyer.as_ref(), escrow.order_id_hash.as_ref()],
+        bump = escrow.bump,
+        has_one = buyer @ EscrowError::Unauthorized,
+        has_one = mint,
+        has_one = vault
     )]
     pub escrow: Account<'info, Escrow>,
 
-    #[account(mut, address = escrow.vault)]
+    pub buyer: Signer<'info>,
+
+    pub mint: Account<'info, Mint>,
+
+    #[account(mut)]
     pub vault: Account<'info, TokenAccount>,
 
     #[account(
@@ -240,33 +253,6 @@ pub struct ReleaseToSupplier<'info> {
         constraint = supplier_token_account.mint == escrow.mint @ EscrowError::WrongDestination
     )]
     pub supplier_token_account: Account<'info, TokenAccount>,
-
-    pub buyer: Signer<'info>,
-
-    pub token_program: Program<'info, Token>,
-}
-
-#[derive(Accounts)]
-pub struct Claim<'info> {
-    #[account(
-        mut,
-        has_one = buyer,
-        seeds = [b"escrow", escrow.buyer.as_ref(), escrow.order_id_hash.as_ref()],
-        bump = escrow.bump
-    )]
-    pub escrow: Account<'info, Escrow>,
-
-    #[account(mut, address = escrow.vault)]
-    pub vault: Account<'info, TokenAccount>,
-
-    #[account(
-        mut,
-        constraint = supplier_token_account.owner == escrow.supplier @ EscrowError::WrongDestination,
-        constraint = supplier_token_account.mint == escrow.mint @ EscrowError::WrongDestination
-    )]
-    pub supplier_token_account: Account<'info, TokenAccount>,
-
-    pub buyer: Signer<'info>,
 
     pub token_program: Program<'info, Token>,
 }
@@ -275,14 +261,22 @@ pub struct Claim<'info> {
 pub struct Settle<'info> {
     #[account(
         mut,
-        has_one = buyer,
-        has_one = supplier,
-        seeds = [b"escrow", escrow.buyer.as_ref(), escrow.order_id_hash.as_ref()],
-        bump = escrow.bump
+        seeds = [ESCROW_SEED, escrow.buyer.as_ref(), escrow.order_id_hash.as_ref()],
+        bump = escrow.bump,
+        has_one = buyer @ EscrowError::Unauthorized,
+        has_one = supplier @ EscrowError::Unauthorized,
+        has_one = mint,
+        has_one = vault
     )]
     pub escrow: Account<'info, Escrow>,
 
-    #[account(mut, address = escrow.vault)]
+    pub buyer: Signer<'info>,
+
+    pub supplier: Signer<'info>,
+
+    pub mint: Account<'info, Mint>,
+
+    #[account(mut)]
     pub vault: Account<'info, TokenAccount>,
 
     #[account(
@@ -299,17 +293,12 @@ pub struct Settle<'info> {
     )]
     pub buyer_token_account: Account<'info, TokenAccount>,
 
-    /// Buyer must co-sign the settlement.
-    pub buyer: Signer<'info>,
-
-    /// Supplier must co-sign the settlement. Both signatures are required by
-    /// the runtime because both are declared `Signer` here.
-    pub supplier: Signer<'info>,
-
     pub token_program: Program<'info, Token>,
 }
 
+/// Field order is part of the server's decoder (server/src/escrow.ts); append only.
 #[account]
+#[derive(InitSpace)]
 pub struct Escrow {
     pub buyer: Pubkey,
     pub supplier: Pubkey,
@@ -319,6 +308,7 @@ pub struct Escrow {
     pub terms_hash: [u8; 32],
     pub total_amount: u64,
     pub released_amount: u64,
+    /// Amount the buyer disputed (history); what is still held is `locked()`.
     pub claimed_amount: u64,
     pub refunded_amount: u64,
     pub status: EscrowStatus,
@@ -326,11 +316,16 @@ pub struct Escrow {
 }
 
 impl Escrow {
-    // discriminator(8) + 4 pubkeys(32*4) + 2 hashes(32*2) + 4 u64(8*4) + status(1) + bump(1)
-    pub const SIZE: usize = 8 + 32 * 4 + 32 * 2 + 8 * 4 + 1 + 1;
+    pub fn locked(&self) -> Result<u64> {
+        self.total_amount
+            .checked_sub(self.released_amount)
+            .and_then(|rest| rest.checked_sub(self.refunded_amount))
+            .ok_or_else(|| error!(EscrowError::Overflow))
+    }
 }
 
-#[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, PartialEq, Eq)]
+/// Variant order is part of the server's decoder; append only.
+#[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, PartialEq, Eq, InitSpace)]
 pub enum EscrowStatus {
     Funded,
     Claimed,
@@ -342,10 +337,16 @@ pub enum EscrowStatus {
 pub enum EscrowError {
     #[msg("Amount must be greater than zero")]
     InvalidAmount,
-    #[msg("Escrow is not in the expected status for this action")]
+    #[msg("Escrow is not in the right state for this action")]
     InvalidStatus,
-    #[msg("Amounts do not sum to the locked amount")]
+    #[msg("Amounts must add up exactly to the held amount")]
     AmountMismatch,
-    #[msg("Destination token account does not match the stored recipient")]
+    #[msg("Payout account does not belong to the stored recipient")]
     WrongDestination,
+    #[msg("Signer is not the party stored on this escrow")]
+    Unauthorized,
+    #[msg("Buyer and supplier must be different wallets")]
+    BuyerIsSupplier,
+    #[msg("Arithmetic overflow")]
+    Overflow,
 }
