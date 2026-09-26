@@ -17,7 +17,7 @@ import type { PaymentAttempt } from "./solana/payments.ts";
  */
 
 const here = dirname(fileURLToPath(import.meta.url));
-export const DATA_DIR = join(here, "..", "data");
+export const DATA_DIR = process.env.CLEARDOCK_DATA_DIR || join(here, "..", "data");
 export const UPLOAD_DIR = join(DATA_DIR, "uploads");
 const DB_FILE = join(DATA_DIR, "db.json");
 const FIXTURES = join(here, "..", "..", "shared", "fixtures");
@@ -31,11 +31,14 @@ interface Db {
   scans: ScanResult[];
   /** Every unsigned payment transaction ever issued. Survives approval voids. */
   paymentAttempts: PaymentAttempt[];
+  /** Orders that had a payment transaction issued, set aside by a demo reset. Kept for the record. */
+  archivedOrders: Order[];
 }
 
 mkdirSync(UPLOAD_DIR, { recursive: true });
 
-function seed(): Db {
+/** Rehearsal 1 is ord_1001 / PO-1001; later rehearsals get fresh identities (ord_1001_r2 / PO-1001-R2). */
+function seed(rehearsal = 1): Db {
   const supplier = JSON.parse(readFileSync(join(FIXTURES, "supplier.json"), "utf8")) as Supplier;
   // The demo supplier's devnet wallet comes from .env (same value setup-devnet uses), never from AI output.
   const envWallet = process.env.DEMO_SUPPLIER_WALLET?.trim();
@@ -45,8 +48,8 @@ function seed(): Db {
     suppliers: [supplier],
     orders: [
       {
-        id: "ord_1001",
-        reference: "PO-1001",
+        id: rehearsal === 1 ? "ord_1001" : `ord_1001_r${rehearsal}`,
+        reference: rehearsal === 1 ? "PO-1001" : `PO-1001-R${rehearsal}`,
         supplierId: supplier.id,
         currency: "USD",
         status: "needs_documents",
@@ -67,22 +70,46 @@ function seed(): Db {
     captures: [],
     scans: [],
     paymentAttempts: [],
+    archivedOrders: [],
   };
 }
 
 export const db: Db = existsSync(DB_FILE) ? JSON.parse(readFileSync(DB_FILE, "utf8")) : seed();
 // Older db.json files predate contracts v2.
 db.paymentAttempts ??= [];
+db.archivedOrders ??= [];
 for (const o of db.orders) o.escrow ??= null;
 
 export function save() {
   writeFileSync(DB_FILE, JSON.stringify(db, null, 2));
 }
 
-/** Reseeds demo data. Payment attempts are kept: an issued transaction can still land after a reset. */
-export function resetDb() {
-  Object.assign(db, seed(), { paymentAttempts: db.paymentAttempts });
+/**
+ * Demo reset. An order that ever had a payment transaction issued is archived
+ * (with its evidence), never reset in place, and the fresh demo order gets a new
+ * identity. So a reference that was paid on-chain is never shown as unpaid again.
+ * Payment attempts are always kept. The caller must first check no issued
+ * transaction can still land.
+ */
+export function resetDb(): Order {
+  const touched = new Set(db.paymentAttempts.map((a) => a.orderId));
+  const archivedOrders = [...db.archivedOrders, ...db.orders.filter((o) => touched.has(o.id))];
+  const kept = new Set(archivedOrders.map((o) => o.id));
+  const keep = <T extends { orderId: string }>(rows: T[]) => rows.filter((r) => kept.has(r.orderId));
+  let rehearsal = 1;
+  while (touched.has(rehearsal === 1 ? "ord_1001" : `ord_1001_r${rehearsal}`)) rehearsal++;
+  const fresh = seed(rehearsal);
+  Object.assign(db, {
+    ...fresh,
+    documents: keep(db.documents),
+    sessions: keep(db.sessions),
+    captures: keep(db.captures),
+    scans: keep(db.scans),
+    paymentAttempts: db.paymentAttempts,
+    archivedOrders,
+  });
   save();
+  return fresh.orders[0];
 }
 
 export const id = (prefix: string) => `${prefix}_${Math.random().toString(36).slice(2, 10)}`;

@@ -19,10 +19,12 @@ import { Connection } from "@solana/web3.js";
 import { db, id, resetDb, save, UPLOAD_DIR } from "./store.ts";
 import {
   assertEvidenceUnlocked,
+  assertNoLiveTransaction,
   confirmPayment,
   hasIssuedAttempt,
   HttpError,
   issueTransaction,
+  submitSignedTransaction,
   type PaymentCtx,
 } from "./solana/payments.ts";
 import { configuredMint, isValidAmount, isWallet, publicConfig, rpcUrl } from "./solana/tx.ts";
@@ -390,6 +392,16 @@ app.post(
   }),
 );
 
+// Supported signing flow: the wallet signs only; the server checks the bytes, records the signature, broadcasts.
+app.post(
+  "/api/orders/:id/payments/submit",
+  wrap(async (req, res) => {
+    const order = getOrder(req.params.id);
+    await submitSignedTransaction(order, req.body?.transaction, solana);
+    res.json(detail(order));
+  }),
+);
+
 // Verifies the landed transaction on devnet. Same signature again = re-check.
 app.post(
   "/api/orders/:id/payments/confirm",
@@ -402,10 +414,15 @@ app.post(
 
 // ---------- dev ----------
 
-app.post("/api/dev/reset", (_req, res) => {
-  resetDb();
-  res.json({ ok: true });
-});
+// Rehearse again: archives orders that had a payment transaction, seeds a fresh demo order.
+app.post(
+  "/api/dev/reset",
+  wrap(async (_req, res) => {
+    for (const order of db.orders) await assertNoLiveTransaction(order, solana);
+    const order = resetDb();
+    res.json({ ok: true, orderId: order.id, reference: order.reference });
+  }),
+);
 
 // ---------- errors ----------
 

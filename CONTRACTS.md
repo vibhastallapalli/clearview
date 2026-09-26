@@ -62,22 +62,25 @@ Base `/api`. Errors are `{ error, code }` with `code` one of `not_found`, `bad_r
 | POST | `/orders/:id/approve` | `{ evidenceRevision }` | `OrderDetail`, or 409 `stale_approval` |
 | POST | `/orders/:id/payments` | | `OrderDetail` (idempotent per approval; 409 if `DEMO_TOKEN_MINT` unset) |
 | POST | `/orders/:id/payments/transaction` | `{ payer }` | `PaymentTransaction`: **unsigned**. 409 if approval stale, payment submitted/confirmed/unknown, or another wallet's tx could still land; 503 if RPC down |
-| POST | `/orders/:id/payments/confirm` | `{ signature }` | `OrderDetail`, payment `submitted` / `confirmed` / `failed` / `unknown`. Same signature again = re-check. 409 on mismatch or reused signature |
-| POST | `/dev/reset` | | reseeds demo data |
+| POST | `/orders/:id/payments/submit` | `{ transaction }` (base64, **signed** by the buyer's wallet) | `OrderDetail`. Server checks it against the issued attempt, records the signature, broadcasts, then verifies. 409 (not broadcast) if the blockhash, fee payer or instructions changed |
+| POST | `/orders/:id/payments/confirm` | `{ signature }` | `OrderDetail`: re-check a submitted payment. 409 on mismatch, reused or unknown signature |
+| POST | `/dev/reset` | | `{ ok, orderId, reference }`. Fresh demo order. An order that had a payment transaction is archived and the next one gets a new identity (`ord_1001_r2` / `PO-1001-R2`). 409 while a transaction could still land |
 
 ## Payment flow (server ↔ web)
 
 1. `POST /approve { evidenceRevision }` → order `approved`.
 2. `POST /payments` → payment `awaiting_signature` with `recipient`, `amountMinor`, `mint`, `memo`.
 3. `POST /payments/transaction { payer }` → unsigned tx: create supplier ATA (idempotent) · `transferChecked` of `amountMinor` CDT · memo `ClearDock <PO> <paymentId>`. Buyer is fee payer and only signer; the server never signs. The same wallet asking again while the blockhash is valid gets the **same bytes**, so double clicks and retries after a wallet rejection can land at most once.
-4. Web: `Transaction.from(Buffer.from(transaction, "base64"))` → wallet adapter `sendTransaction`.
-5. `POST /payments/confirm { signature }`. Server fetches the tx at `confirmed` and checks: success; recentBlockhash of an issued attempt; buyer is fee payer, signer and transfer authority; exactly one `transferChecked` of the configured mint, 2 decimals, exact amount, buyer ATA → verified supplier ATA; supplier ATA owned by the supplier with exactly that balance delta; the memo. The memo alone never confirms.
-6. `submitted` = not found yet, POST the same signature again. `unknown` = RPC unreachable, POST again. `failed` + `error` = landed wrong, failed on-chain, or expired without landing; a new transaction may then be issued.
+4. Web: `Transaction.from(bytes)` → wallet adapter **`signTransaction`** (sign only; never `sendTransaction`) → `POST /payments/submit { transaction: base64(signed.serialize()) }`. The server refuses to broadcast if the wallet changed the blockhash, fee payer or instructions (compute-budget additions are allowed), records the signature, then broadcasts.
+5. The server (and later `POST /payments/confirm { signature }`) fetches
+6. `submitted` = not found yet: POST `/confirm` with the same signature again. `unknown` = broadcast response lost or RPC unreachable, or a transaction with our memo landed with a foreign blockhash (then manual review: no retry is possible). `failed` + `error` = rejected before broadcast, landed wrong, failed on-chain, or expired without landing. A *new* transaction is only issued once the previous one's blockhash has expired and it provably didn't land.
 7. Explorer: `https://explorer.solana.com/tx/<signature>?cluster=devnet`.
 
 **Evidence changes after a transaction is issued.** A signed transfer can't be recalled. Document and capture uploads return 409 while an issued transaction could still land (until its `lastValidBlockHeight` passes, about 60–90 s, and the server has checked it didn't land), and always once the payment is `submitted`, `unknown` or `confirmed`. A confirmed payment stays confirmed; later problems go to Phase 2 claims.
 
-**Recovering an unreported transaction.** Before an expired attempt is released, the server pages through the buyer CDT account's signatures back to the issue time and fetches any that carry the payment memo. If it can't reach the issue time (RPC down, more than 500 buyer transactions), the attempt stays open. Attempts live in `server/data/db.json`, so they survive restarts and `POST /dev/reset`. Deleting that file removes the protection.
+**Signing policy (why sign-only).** Expiry is only provable for the blockhash ClearDock issued. A wallet that sends the transaction itself may re-blockhash it, and the new copy stays valid after ours expires. So only `/payments/submit` is supported. A transaction carrying our memo that lands with another blockhash freezes the payment (`unknown`) instead of allowing a retry. Rejecting a transaction in the server never un-sends one already on-chain.
+
+**Recovering an unreported transaction.** Before an expired attempt is released, the server pages through the buyer CDT account's signatures back to the issue time and fetches any that carry the payment memo. If it can't reach the issue time (RPC down, more than 500 buyer transactions), the attempt stays open. Attempts live in `server/data/db.json`, so they survive restarts and `POST /dev/reset` (which archives orders instead of reusing their identity). Deleting that file removes the protection. To rehearse another payment, call `POST /dev/reset` and use the returned `orderId` (e.g. `python station.py --order ord_1001_r2`).
 
 **Approval gates.** Only `outcome: "match"` with no `flags`, a verified supplier, and a supplier wallet equal to `DEMO_SUPPLIER_WALLET` when that is set.
 
