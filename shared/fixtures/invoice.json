@@ -1,0 +1,26 @@
+{
+  "id": "doc_inv_1001",
+  "orderId": "ord_1001",
+  "kind": "invoice",
+  "source": { "filename": "FACTURA-1001.png", "mimeType": "image/png", "sha256": "fixture" },
+  "supplierName": "Tostadores del Norte",
+  "orderReference": "PO-1001",
+  "currency": "USD",
+  "language": "es",
+  "lines": [
+    {
+      "sku": "PROD-A",
+      "description": "Café en grano Producto A",
+      "quantity": 1.5,
+      "unit": "kg",
+      "unitSizeGrams": 500,
+      "unitPriceMinor": 1000,
+      "sourceText": "1,5 kg Café en grano Producto A (3 bolsas de 500 g) — $10.00/bolsa",
+      "confidence": 0.93
+    }
+  ],
+  "totalMinor": 3000,
+  "warnings": [],
+  "extractedBy": "mock",
+  "extractedAt": "2026-09-26T12:00:05.000Z"
+}

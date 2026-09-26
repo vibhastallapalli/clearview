@@ -1,0 +1,12 @@
+{
+  "id": "scan_match",
+  "orderId": "ord_1001",
+  "captureId": "cap_fixture",
+  "observed": [
+    { "sku": "PROD-A", "labelText": "PRODUCT A · 500 g", "count": 3, "confidence": 0.95 }
+  ],
+  "unreadable": [],
+  "notes": "Three Product A bags, labels clearly visible.",
+  "analyzedBy": "mock",
+  "analyzedAt": "2026-09-26T12:01:00.000Z"
+}

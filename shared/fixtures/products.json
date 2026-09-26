@@ -1,0 +1,4 @@
+[
+  { "sku": "PROD-A", "names": ["Product A", "Producto A", "Café en grano Producto A"], "unitSizeGrams": 500 },
+  { "sku": "PROD-B", "names": ["Product B", "Producto B"], "unitSizeGrams": 500 }
+]

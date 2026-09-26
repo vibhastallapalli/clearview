@@ -1,0 +1,26 @@
+{
+  "id": "doc_po_1001",
+  "orderId": "ord_1001",
+  "kind": "purchase_order",
+  "source": { "filename": "PO-1001.pdf", "mimeType": "application/pdf", "sha256": "fixture" },
+  "supplierName": "Tostadores del Norte",
+  "orderReference": "PO-1001",
+  "currency": "USD",
+  "language": "en",
+  "lines": [
+    {
+      "sku": "PROD-A",
+      "description": "Product A coffee beans, 500 g bag",
+      "quantity": 3,
+      "unit": "bag",
+      "unitSizeGrams": 500,
+      "unitPriceMinor": 1000,
+      "sourceText": "3 x Product A coffee beans 500g bag @ $10.00",
+      "confidence": 0.98
+    }
+  ],
+  "totalMinor": 3000,
+  "warnings": [],
+  "extractedBy": "mock",
+  "extractedAt": "2026-09-26T12:00:00.000Z"
+}
