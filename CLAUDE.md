@@ -10,11 +10,10 @@ Read README.md, PROJECT.md, CONTRACTS.md and TASKS.md before changing anything. 
 ## Ownership (don't edit files you don't own)
 | Workstream | Branch prefix | Owns |
 |---|---|---|
-| 1 Payments (web) | `sol/wallet` | `web/src/payment/**` |
-| 2 Payments (server + devnet) | `sol/confirm` | `server/src/solana/**`, `solana/scripts/**`, the `/payments/confirm` route |
-| 3 AI / Gemini | `ai/gemini` | `server/src/ai/**`, `samples/**` |
-| 4 Web UX | `web/ux` | `web/**` except `web/src/payment/**` (Agent 1 may also add wallet deps to `web/package.json`) |
-| 5 Escrow program | `sol/escrow` | `solana/program/**` |
+| 1 Payments (server + web) | `sol/payments` | `web/src/payment/**`, `server/src/solana/**`, `solana/scripts/**`, the `/payments/confirm` route |
+| 2 AI / Gemini | `ai/gemini` | `server/src/ai/**`, `samples/**` |
+| 3 Web UX | `web/ux` | `web/**` except `web/src/payment/**` (Agent 1 may also add wallet deps to `web/package.json`) |
+| 4 Escrow program | `sol/escrow` | `solana/program/**` |
 | Hardware (human) | `hw/*` | `hardware/**` |
 
 Shared files (`shared/src/contracts.ts`, `shared/fixtures/**`, `server/src/index.ts` routes you don't own, root `package.json`) change only through the integrator. If you need a contract change, write it in your PR description under **Contract change requested**; don't make it yourself.

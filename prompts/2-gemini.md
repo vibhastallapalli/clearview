@@ -1,4 +1,4 @@
-# Agent 3: Gemini extraction and scan analysis
+# Agent 2: Gemini extraction and scan analysis
 
 **Branch:** `ai/gemini` · **Owns:** `server/src/ai/**`, `samples/**`
 

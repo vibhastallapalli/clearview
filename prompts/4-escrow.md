@@ -1,4 +1,4 @@
-# Agent 5: Escrow program (Phase 2, isolated)
+# Agent 4: Escrow program (Phase 2, isolated)
 
 **Branch:** `sol/escrow` · **Owns:** `solana/program/**`
 
