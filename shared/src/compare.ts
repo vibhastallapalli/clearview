@@ -74,7 +74,40 @@ export interface CompareInput {
   purchaseOrder?: ExtractedDocument;
   invoice?: ExtractedDocument;
   scan?: ScanResult;
+  /** The supplier's verified payout address. A different address printed on a document is flagged. */
+  verifiedWallet?: string;
   now?: string;
+}
+
+const KIND_LABEL: Record<ExtractedDocument["kind"], string> = {
+  purchase_order: "Purchase order",
+  invoice: "Invoice",
+  delivery_receipt: "Delivery receipt",
+};
+
+/**
+ * Blocking flags from document content the owner must see before approving.
+ * Flags never change the payment address or amount; they only stop approval.
+ */
+export function documentFlags(docs: (ExtractedDocument | undefined)[], verifiedWallet?: string): string[] {
+  const flags: string[] = [];
+  for (const doc of docs) {
+    if (!doc) continue;
+    const label = KIND_LABEL[doc.kind];
+    for (const quote of doc.embeddedInstructions ?? []) {
+      flags.push(`${label} contains text addressed to software, which was ignored: "${quote}"`);
+    }
+    const printed = doc.paymentAddress?.trim();
+    if (!printed) continue;
+    if (!verifiedWallet) {
+      flags.push(`${label} prints payment address ${printed}, and there is no verified supplier wallet to check it against.`);
+    } else if (printed !== verifiedWallet.trim()) {
+      flags.push(
+        `${label} asks for payment to ${printed}, which is not the verified supplier wallet. ClearDock only pays the verified wallet.`,
+      );
+    }
+  }
+  return flags;
 }
 
 export function compareOrder(input: CompareInput): Comparison {
@@ -146,9 +179,10 @@ export function compareOrder(input: CompareInput): Comparison {
   const hasUnknown = lines.some((l) => l.verdict === "unknown");
   const hasIssue = lines.some((l) => l.verdict !== "match");
   const missingDocs = !input.purchaseOrder || !input.invoice;
+  const flags = documentFlags([input.purchaseOrder, input.invoice], input.verifiedWallet);
 
   let outcome: ComparisonOutcome;
-  if (missingDocs || !haveScan || hasUnknown || unreadable > 0) outcome = "needs_info";
+  if (missingDocs || !haveScan || hasUnknown || unreadable > 0 || flags.length > 0) outcome = "needs_info";
   else if (hasIssue) outcome = "discrepancy";
   else outcome = "match";
 
@@ -169,7 +203,8 @@ export function compareOrder(input: CompareInput): Comparison {
     orderedTotalMinor: sum(po),
     billedTotalMinor: sum(inv),
     undisputedMinor,
-    summary: summarize(outcome, lines, { missingDocs, haveScan, unreadable }),
+    summary: summarize(outcome, lines, { missingDocs, haveScan, unreadable, flags }),
+    flags,
     computedAt: input.now ?? new Date().toISOString(),
   };
 }
@@ -177,8 +212,9 @@ export function compareOrder(input: CompareInput): Comparison {
 function summarize(
   outcome: ComparisonOutcome,
   lines: ComparisonLine[],
-  ctx: { missingDocs: boolean; haveScan: boolean; unreadable: number },
+  ctx: { missingDocs: boolean; haveScan: boolean; unreadable: number; flags: string[] },
 ): string {
+  if (ctx.flags.length > 0) return `Blocked for review: ${ctx.flags.join(" ")}`;
   if (ctx.missingDocs) return "Upload the purchase order and invoice to compare.";
   if (!ctx.haveScan) return "Paperwork loaded. Capture the delivery to compare.";
   if (ctx.unreadable > 0) return `${ctx.unreadable} package(s) could not be read. Recapture or review manually.`;
