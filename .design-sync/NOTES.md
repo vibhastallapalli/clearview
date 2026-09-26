@@ -26,6 +26,8 @@
 
 ## Re-sync risks
 
+- **Stale as of the SecuroServ light theme (branch `ui`).** The app now follows the Claude Design handoff (light glass, teal, Geist). `conventions.md`, the previews (they use `.brand-word`, `.live-dot`, dark-theme copy) and the uploaded project still describe the old dark theme. Re-author the previews and the conventions header, then re-sync before relying on the design-system project.
+
 - `build-pkg.mjs` hardcodes the component list and file paths. Moving a component file breaks the build loudly (tsc error); adding one needs a line there.
 - `styles.css` is copied, not linked: always run `build-pkg.mjs` after editing `web/src/styles.css` or the project ships the old theme.
 - Fonts come from a Google Fonts `@import` at runtime (`[FONT_REMOTE]`); designs render in fallback fonts offline.
