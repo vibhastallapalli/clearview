@@ -1,7 +1,7 @@
 use anchor_lang::prelude::*;
 use anchor_spl::token::{self, Mint, Token, TokenAccount, TransferChecked};
 
-declare_id!("2tVuzMGuXEX6ZcvBdDroKr163z3Y8B7fJubwGuqUBv4J");
+declare_id!("Bk4DD3mGCJRFATHTnLqyoxiWDm65nfMcPfE7oduiQzAt");
 
 pub const ESCROW_SEED: &[u8] = b"escrow";
 pub const VAULT_SEED: &[u8] = b"vault";

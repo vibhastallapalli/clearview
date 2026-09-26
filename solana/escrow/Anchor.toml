@@ -6,10 +6,10 @@ resolution = true
 skip-lint = false
 
 [programs.localnet]
-escrow = "2tVuzMGuXEX6ZcvBdDroKr163z3Y8B7fJubwGuqUBv4J"
+escrow = "Bk4DD3mGCJRFATHTnLqyoxiWDm65nfMcPfE7oduiQzAt"
 
 [programs.devnet]
-escrow = "2tVuzMGuXEX6ZcvBdDroKr163z3Y8B7fJubwGuqUBv4J"
+escrow = "Bk4DD3mGCJRFATHTnLqyoxiWDm65nfMcPfE7oduiQzAt"
 
 [provider]
 cluster = "localnet"
