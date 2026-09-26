@@ -10,3 +10,9 @@ server/data/
 __pycache__/
 *.pyc
 solana/.keys/
+
+# Solana secrets: setup keypairs must never be committed
+**/.keys/
+*keypair*.json
+cdt-mint-authority*.json
+id.json

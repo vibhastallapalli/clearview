@@ -14,7 +14,8 @@
     "dev:web": "npm run dev -w web",
     "test": "npm test -w shared && npm test -w server",
     "typecheck": "npm run typecheck -w shared && npm run typecheck -w server && npm run typecheck -w web",
-    "build": "npm run build -w web"
+    "build": "npm run build -w web",
+    "setup:devnet": "npm run setup:devnet -w server --"
   },
   "devDependencies": {
     "concurrently": "^9.1.2"
