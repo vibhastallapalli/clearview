@@ -66,6 +66,15 @@ export const isValidAmount = (n: unknown): n is number => Number.isSafeInteger(n
 export const isSignature = (s: unknown): s is string =>
   typeof s === "string" && /^[1-9A-HJ-NP-Za-km-z]{64,88}$/.test(s);
 
+const B58 = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+/** Base58 (Bitcoin alphabet), for turning signature bytes into the usual string. */
+export function base58(bytes: Uint8Array): string {
+  let out = "";
+  for (let n = BigInt("0x" + (Buffer.from(bytes).toString("hex") || "0")); n > 0n; n /= 58n) out = B58[Number(n % 58n)] + out;
+  for (let i = 0; i < bytes.length && bytes[i] === 0; i++) out = "1" + out;
+  return out;
+}
+
 export const ata = (mint: string, owner: string) =>
   getAssociatedTokenAddressSync(new PublicKey(mint), new PublicKey(owner)).toBase58();
 
