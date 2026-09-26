@@ -1,6 +1,6 @@
 import { useEffect } from "react";
 import { Link } from "react-router-dom";
-import type { LineVerdict, OrderDetail } from "@cleardock/shared";
+import type { EscrowRecord, LineVerdict, OrderDetail } from "@cleardock/shared";
 import { money } from "../api";
 import { short } from "../format";
 import {
@@ -10,6 +10,7 @@ import {
   acceptRequest,
   claimRequest,
   claimedOf,
+  fundRequest,
   historyFor,
   orderStatus,
   physicalRequest,
@@ -19,8 +20,10 @@ import {
   totalOf,
   txUrl,
   usd,
+  type ChainAction,
   type DemoState,
   type EscrowEvent,
+  type OfferId,
   type Tone,
 } from "./demo";
 import { useDemo } from "./DemoProvider";
@@ -37,19 +40,48 @@ const VERDICT: Record<LineVerdict, (discrepancyMinor: number) => [string, Tone]>
 
 const Sim = () => <span className="sim">SIMULATED</span>;
 
+const CHAIN_EVENT: Record<string, string> = {
+  fund: "Buyer funded escrow",
+  accept_all: "Buyer accepted every line",
+  claim: "Buyer accepted lines and filed a claim",
+  settle: "Settlement signed by buyer and supplier",
+};
+
+// Money figures come from the server's verified copy of the on-chain escrow account.
+function escFrom(e: EscrowRecord): DemoState["esc"] {
+  const held = e.totalMinor - e.releasedMinor - e.refundedMinor;
+  return { released: e.releasedMinor, refunded: e.refundedMinor, locked: e.status === "claimed" ? held : 0, status: e.status };
+}
+
 export function EscrowWorkspace({ detail }: { detail: OrderDetail }) {
   const { role, ensure, peek, update, scan, sign } = useDemo();
   const orderId = detail.order.id;
+  const onChain = detail.order.escrow;
+  const chainStatus = onChain?.status;
   useEffect(() => ensure(orderId, detail), [ensure, orderId, detail]);
-  const st = peek(orderId);
-  if (!st) return null;
+  // Follow the chain if it moved on without this browser (reload, other device).
+  useEffect(() => {
+    if (!chainStatus) return;
+    update(orderId, (s) => {
+      if (chainStatus === "claimed" && ["delivered", "scanning", "report"].includes(s.step)) return { step: "claimed" };
+      if ((chainStatus === "released" || chainStatus === "settled") && s.step !== "settled") return { step: "settled" };
+      return {};
+    });
+  }, [chainStatus, orderId, update]);
+  const local = peek(orderId);
+  if (!local) return null;
+  const st: DemoState = onChain ? { ...local, esc: escFrom(onChain) } : local;
 
   const isBuyer = role === "buyer";
   const cpKey = isBuyer ? "supplier" : "buyer";
   const cp = PARTY[cpKey];
-  const total = totalOf(st.lines);
+  const total = onChain?.totalMinor ?? totalOf(st.lines);
   const L = st.esc.locked;
-  const held = total - st.esc.released - st.esc.refunded - L;
+  const settleChain = (id: OfferId): ChainAction => {
+    const sup = Math.round(L * OFFERS.find((o) => o.id === id)!.sup);
+    return { action: "settle", toSupplier: sup, toBuyer: L - sup };
+  };
+  const held = onChain ? total - st.esc.released - st.esc.refunded - L : 0;
   const [stLabel, stTone] = orderStatus(st);
   const [escLabel, escTone] = ESCROW_STATUS[st.esc.status];
   const isProposer = st.offer?.by === role;
@@ -60,9 +92,42 @@ export function EscrowWorkspace({ detail }: { detail: OrderDetail }) {
   const items = itemsLine(detail);
   const cpLine = isBuyer
     ? `${detail.supplier.name} · verified wallet ${short(detail.supplier.walletAddress)} · ${items}`
-    : `${PARTY.buyer.name} (synthetic) · buyer wallet ${PARTY.buyer.wallet} · ${items}`;
-  const wait = waitCard(st, role, cp.name, curOffer?.label);
+    : `${PARTY.buyer.name} (synthetic) · buyer wallet ${onChain ? short(onChain.buyer) : PARTY.buyer.wallet} · ${items}`;
+  const wait = onChain
+    ? waitCard(st, role, cp.name, curOffer?.label)
+    : isBuyer
+      ? null
+      : (["Waiting on buyer", `${cp.name} hasn't funded the escrow yet.`, "Once they lock the order total on devnet, you're guaranteed payment for every line they accept."] as [string, string, string]);
+  const outcome =
+    onChain && settled
+      ? {
+          title:
+            onChain.status === "released"
+              ? `Accepted in full. Supplier paid ${usd(onChain.releasedMinor)}.`
+              : `Both signed. Supplier paid ${usd(onChain.releasedMinor)}, buyer refunded ${usd(onChain.refundedMinor)}.`,
+          label: local.outcome?.label ?? (onChain.claimedMinor ? "Settlement" : undefined),
+          sup: onChain.releasedMinor,
+          buy: onChain.refundedMinor,
+          sig: onChain.events.at(-1)?.signature ?? "",
+          simulated: false,
+          claim: onChain.claimedMinor,
+        }
+      : st.outcome;
   const cpHistory = historyFor(cpKey, st);
+  // Verified on-chain events this browser didn't sign itself (reload, other device).
+  const seen = new Set(st.events.map((e) => e.sig));
+  const timeline: EscrowEvent[] = [
+    ...st.events,
+    ...(onChain?.events ?? [])
+      .filter((e) => !seen.has(e.signature))
+      .map((e) => ({
+        label: CHAIN_EVENT[e.action] ?? e.action,
+        detail: "Verified on devnet by ClearDock",
+        at: new Date(e.at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false }),
+        sig: e.signature,
+        sim: false,
+      })),
+  ];
 
   return (
     <>
@@ -84,7 +149,21 @@ export function EscrowWorkspace({ detail }: { detail: OrderDetail }) {
 
       <div className="cols">
         <div className="col-main">
-          {st.step === "delivered" && isBuyer && (
+          {!onChain && isBuyer && (
+            <section className="card">
+              <span className="eyebrow">Step 0 · Escrow</span>
+              <h2>Lock {usd(total)} CDT in escrow before the delivery.</h2>
+              <p className="body">
+                The escrow program on Solana devnet holds the money. It can only pay the verified supplier wallet, and the
+                amount you dispute moves only when you both sign.
+              </p>
+              <button className="primary" onClick={() => sign(orderId, fundRequest(st, detail.order.reference), detail)}>
+                Fund escrow with Phantom
+              </button>
+            </section>
+          )}
+
+          {onChain && st.step === "delivered" && isBuyer && (
             <section className="card">
               <span className="eyebrow">Step 1 · Receiving</span>
               <h2>Your delivery arrived. Scan it before you accept.</h2>
@@ -161,7 +240,19 @@ export function EscrowWorkspace({ detail }: { detail: OrderDetail }) {
                 </div>
               </div>
               <p className="note">Filing a claim locks money. It never refunds you by itself: the supplier has to sign too.</p>
-              <button className="primary" onClick={() => sign(orderId, claimRequest(st))}>
+              <button
+                className="primary"
+                onClick={() =>
+                  sign(
+                    orderId,
+                    {
+                      ...claimRequest(st),
+                      chain: claimed ? { action: "claim", accepted: total - st.esc.released - st.esc.refunded - claimed, claimed } : { action: "accept_all" },
+                    },
+                    detail,
+                  )
+                }
+              >
                 {claimed ? `Sign: release ${usd(total - claimed)}, claim ${usd(claimed)}` : `Sign: accept all · release ${usd(total)}`}
               </button>
             </section>
@@ -208,7 +299,7 @@ export function EscrowWorkspace({ detail }: { detail: OrderDetail }) {
                 })}
               </div>
               <div className="row wrap">
-                <button className="primary" onClick={() => sign(orderId, proposeRequest(st, role))}>
+                <button className="primary" onClick={() => sign(orderId, proposeRequest(st, role), detail)}>
                   {st.countering ? "Sign & send counter-offer" : "Sign & send offer"}
                 </button>
                 {st.countering && (
@@ -238,7 +329,12 @@ export function EscrowWorkspace({ detail }: { detail: OrderDetail }) {
                 </div>
               </div>
               <div className="row wrap">
-                <button className="primary" onClick={() => sign(orderId, acceptRequest(st))}>
+                <button
+                  className="primary"
+                  onClick={() =>
+                    sign(orderId, curOffer.phys ? acceptRequest(st) : { ...acceptRequest(st), chain: settleChain(curOffer.id) }, detail)
+                  }
+                >
                   Accept &amp; sign
                 </button>
                 <button
@@ -259,26 +355,26 @@ export function EscrowWorkspace({ detail }: { detail: OrderDetail }) {
               <span className="eyebrow">Both signed · {st.pending.label}</span>
               <h2>{st.pending.wait}</h2>
               <p className="body">{st.pending.text}</p>
-              <button className="primary" onClick={() => sign(orderId, physicalRequest(st))}>
+              <button className="primary" onClick={() => sign(orderId, { ...physicalRequest(st), chain: settleChain(st.pending!.id) }, detail)}>
                 {st.pending.act}
               </button>
             </section>
           )}
 
-          {settled && st.outcome && (
+          {settled && outcome && (
             <section className="card card-strong">
               <span className="eyebrow ok-eyebrow">
-                ✓ Executed {st.outcome.simulated ? <Sim /> : "on Solana devnet"}
+                ✓ Executed {outcome.simulated ? <Sim /> : "on Solana devnet"}
               </span>
-              <h2>{st.outcome.title}</h2>
+              <h2>{outcome.title}</h2>
               <div className="totals three">
                 <div className="tint ok">
                   <span className="tint-label">Paid to supplier</span>
-                  <span className="tint-value">{usd(st.outcome.sup)}</span>
+                  <span className="tint-value">{usd(outcome.sup)}</span>
                 </div>
                 <div className="tint info">
                   <span className="tint-label">Refunded to buyer</span>
-                  <span className="tint-value">{usd(st.outcome.buy)}</span>
+                  <span className="tint-value">{usd(outcome.buy)}</span>
                 </div>
                 <div className="tint plain">
                   <span className="tint-label muted">Still locked</span>
@@ -286,14 +382,14 @@ export function EscrowWorkspace({ detail }: { detail: OrderDetail }) {
                 </div>
               </div>
               <p className="note">
-                {st.outcome.label
-                  ? `Added to both parties' dispute record: shortage · 1 line · ${usd(st.outcome.claim)} · ${st.outcome.label.toLowerCase()} · resolved today. No fault is recorded.`
+                {outcome.label
+                  ? `Added to both parties' dispute record: shortage · 1 line · ${usd(outcome.claim)} · ${outcome.label.toLowerCase()} · resolved today. No fault is recorded.`
                   : "No dispute recorded for this order."}
               </p>
-              {st.outcome.simulated ? (
-                <span className="note">Simulated transaction {shortSig(st.outcome.sig)}: nothing was sent to devnet in this build.</span>
+              {outcome.simulated ? (
+                <span className="note">Simulated transaction {shortSig(outcome.sig)}: nothing was sent to devnet in this build.</span>
               ) : (
-                <a className="strong-link" href={txUrl(st.outcome.sig)} target="_blank" rel="noreferrer">
+                <a className="strong-link" href={txUrl(outcome.sig)} target="_blank" rel="noreferrer">
                   View transaction on Solana Explorer ↗
                 </a>
               )}
@@ -308,13 +404,13 @@ export function EscrowWorkspace({ detail }: { detail: OrderDetail }) {
             <div className="row between">
               <span className="eyebrow">Escrow</span>
               <span className="row gap-6">
-                <Sim />
-                <span className={`pill ${escTone} pill-sm`}>{escLabel}</span>
+                {onChain && <span className="pill-plain pill-sm">devnet · verified</span>}
+                <span className={`pill ${escTone} pill-sm`}>{onChain ? escLabel : "Not funded"}</span>
               </span>
             </div>
             <div className="escrow-total">
               <span className="escrow-amount">{usd(total)}</span>
-              <span className="muted">CDT funded by buyer</span>
+              <span className="muted">{onChain ? "CDT funded by buyer" : "CDT to fund"}</span>
             </div>
             <div className="bar" aria-hidden="true">
               <div className="bar-rel" style={{ width: pct(st.esc.released) }} />
@@ -329,7 +425,7 @@ export function EscrowWorkspace({ detail }: { detail: OrderDetail }) {
             </div>
             <div className="divider" />
             <ol className="timeline">
-              {st.events.map((e, i) => (
+              {timeline.map((e, i) => (
                 <TimelineItem key={i} e={e} />
               ))}
             </ol>

@@ -1,16 +1,170 @@
-import type { SignRequest, Tx } from "./demo";
+import { Buffer } from "buffer";
+import { Connection, PublicKey, SystemProgram, Transaction, TransactionInstruction, type AccountMeta } from "@solana/web3.js";
+import type { OrderDetail } from "@cleardock/shared";
+import { api } from "../api";
+import { short } from "../format";
+import * as phantom from "../wallet/phantom";
+import type { ChainAction, SignRequest, Tx } from "./demo";
 
 const B58 = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
 
 export const simulatedSignature = () => Array.from({ length: 88 }, () => B58[Math.floor(Math.random() * 58)]).join("");
 
+const TOKEN_PROGRAM = new PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA");
+const ATA_PROGRAM = new PublicKey("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL");
+
+export interface SignHooks {
+  /** Progress text for the wallet sheet. */
+  status: (text: string) => void;
+  /** settle only: resolves when the user says Phantom is now on the supplier account. */
+  waitForSupplier: (supplier: string, note?: string) => Promise<void>;
+}
+
 /**
- * The single swap point for real signing. Today it simulates a wallet: no
- * wallet is connected and nothing reaches devnet, so every Tx it returns is
- * flagged `simulated` and the UI labels it. Replace the body with Phantom
- * (wallet adapter) + the escrow program (solana/escrow) once both are wired.
+ * Off-chain steps (no `chain`) are simulated and labelled SIMULATED.
+ * Chain steps build the escrow program instruction exactly like
+ * solana/escrow/tests/escrow.test.ts (same seeds, Anchor discriminators, account order),
+ * Phantom signs only, this page broadcasts, and the server verifies the landed
+ * transaction via POST /api/orders/:id/escrow/events. Returns once the server has recorded it.
  */
-export async function signAndSend(_request: SignRequest): Promise<Tx> {
-  await new Promise((resolve) => setTimeout(resolve, 1100));
-  return { sig: simulatedSignature(), simulated: true };
+export async function signAndSend(request: SignRequest, detail: OrderDetail, hooks: SignHooks): Promise<Tx> {
+  if (!request.chain) {
+    await new Promise((resolve) => setTimeout(resolve, 1100));
+    return { sig: simulatedSignature(), simulated: true };
+  }
+  const chain = request.chain;
+
+  const config = await api.config();
+  if (!config.escrowProgramId || !config.mint) throw new Error("The server has no ESCROW_PROGRAM_ID or DEMO_TOKEN_MINT configured.");
+  const programId = new PublicKey(config.escrowProgramId);
+  const mint = new PublicKey(config.mint);
+  const connection = new Connection(config.rpcUrl, "confirmed");
+
+  hooks.status("Connecting Phantom…");
+  const signer = phantom.currentPublicKey() ?? (await phantom.connect());
+  const recorded = detail.order.escrow;
+  const buyer = new PublicKey(recorded?.buyer ?? signer);
+  if (signer !== buyer.toBase58())
+    throw new Error(`Phantom is on ${short(signer)}. Switch Phantom to the buyer account ${short(buyer.toBase58())} and try again.`);
+  const supplier = new PublicKey(detail.supplier.walletAddress);
+
+  const orderIdHash = await sha256(detail.order.reference); // the server checks this ties the escrow to the order
+  const [escrow] = PublicKey.findProgramAddressSync([Buffer.from("escrow"), buyer.toBuffer(), orderIdHash], programId);
+  const [vault] = PublicKey.findProgramAddressSync([Buffer.from("vault"), escrow.toBuffer()], programId);
+  if (recorded && recorded.escrowAddress !== escrow.toBase58()) throw new Error("This order's recorded escrow doesn't match its buyer and reference.");
+
+  const ixs = await instructions(chain, { programId, mint, buyer, supplier, escrow, vault, orderIdHash, reference: detail.order.reference });
+  const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash("confirmed");
+  let tx = new Transaction({ feePayer: buyer, blockhash, lastValidBlockHeight }).add(...ixs);
+
+  hooks.status(chain.action === "settle" ? "Buyer: approve the settlement in Phantom…" : "Approve the transaction in Phantom…");
+  tx = await phantom.signTransaction(tx);
+
+  if (chain.action === "settle") {
+    // Both signatures go on the same transaction, so the same blockhash (valid about a minute).
+    let note: string | undefined;
+    for (;;) {
+      await hooks.waitForSupplier(supplier.toBase58(), note);
+      const now = await phantom.connect();
+      if (now === supplier.toBase58()) break;
+      note = `Phantom is still on ${short(now)}. Select the supplier account ${short(supplier.toBase58())} in Phantom.`;
+    }
+    hooks.status("Supplier: approve the same settlement in Phantom…");
+    tx = await phantom.signTransaction(tx);
+  }
+  if (!tx.verifySignatures())
+    throw new Error("Not sent: the signatures don't match the transaction (a signature is missing, or Phantom changed the transaction after the first signature).");
+
+  hooks.status("Sending to devnet…");
+  const signature = await connection.sendRawTransaction(tx.serialize(), { preflightCommitment: "confirmed" });
+  hooks.status("Waiting for devnet to confirm…");
+  const result = await connection.confirmTransaction({ signature, blockhash, lastValidBlockHeight }, "confirmed");
+  if (result.value.err) throw new Error(`Transaction ${signature} failed on devnet: ${JSON.stringify(result.value.err)}`);
+
+  hooks.status("Recording on ClearDock (the server verifies it on devnet)…");
+  await recordEvent(detail.order.id, chain.action, signature, escrow.toBase58());
+  return { sig: signature, simulated: false };
+}
+
+// The server reads the transaction at "confirmed"; its RPC node can lag ours by a few seconds.
+async function recordEvent(orderId: string, action: ChainAction["action"], signature: string, escrowAddress: string) {
+  for (let i = 0; ; i++) {
+    try {
+      return await api.escrowEvent(orderId, { action, signature, escrowAddress });
+    } catch (err) {
+      if (i >= 5 || !/not confirmed yet/i.test((err as Error).message)) {
+        throw new Error(`Landed on devnet (${signature}) but ClearDock didn't record it: ${(err as Error).message}`);
+      }
+      await new Promise((r) => setTimeout(r, 2000));
+    }
+  }
+}
+
+interface Keys {
+  programId: PublicKey;
+  mint: PublicKey;
+  buyer: PublicKey;
+  supplier: PublicKey;
+  escrow: PublicKey;
+  vault: PublicKey;
+  orderIdHash: Buffer;
+  reference: string;
+}
+
+// Account order = the #[derive(Accounts)] structs in solana/escrow/programs/escrow/src/lib.rs.
+async function instructions(chain: ChainAction, k: Keys): Promise<TransactionInstruction[]> {
+  const w = (pubkey: PublicKey, isSigner = false): AccountMeta => ({ pubkey, isSigner, isWritable: true });
+  const r = (pubkey: PublicKey, isSigner = false): AccountMeta => ({ pubkey, isSigner, isWritable: false });
+  const buyerAta = ata(k.mint, k.buyer);
+  const supplierAta = ata(k.mint, k.supplier);
+  const ix = async (name: string, keys: AccountMeta[], ...args: Buffer[]) =>
+    new TransactionInstruction({ programId: k.programId, keys, data: Buffer.concat([(await sha256(`global:${name}`)).subarray(0, 8), ...args]) });
+  // Payouts need the supplier's token account to exist; creating it is a no-op if it does.
+  const createSupplierAta = new TransactionInstruction({
+    programId: ATA_PROGRAM,
+    keys: [w(k.buyer, true), w(supplierAta), r(k.supplier), r(k.mint), r(SystemProgram.programId), r(TOKEN_PROGRAM)],
+    data: Buffer.from([1]), // CreateIdempotent
+  });
+  const release = [w(k.escrow), r(k.buyer, true), r(k.mint), w(k.vault), w(supplierAta), r(TOKEN_PROGRAM)];
+
+  switch (chain.action) {
+    case "fund":
+      return [
+        await ix(
+          "fund",
+          [w(k.buyer, true), r(k.supplier), r(k.mint), w(buyerAta), w(k.escrow), w(k.vault), r(TOKEN_PROGRAM), r(SystemProgram.programId)],
+          k.orderIdHash,
+          u64(chain.amount),
+          await sha256(`terms:${k.reference}:${chain.amount}`),
+        ),
+      ];
+    case "accept_all":
+      return [createSupplierAta, await ix("accept_all", release)];
+    case "claim":
+      return [createSupplierAta, await ix("claim", release, u64(chain.accepted), u64(chain.claimed))];
+    case "settle":
+      return [
+        createSupplierAta,
+        await ix(
+          "settle",
+          [w(k.escrow), r(k.buyer, true), r(k.supplier, true), r(k.mint), w(k.vault), w(supplierAta), w(buyerAta), r(TOKEN_PROGRAM)],
+          u64(chain.toSupplier),
+          u64(chain.toBuyer),
+        ),
+      ];
+  }
+}
+
+const ata = (mint: PublicKey, owner: PublicKey) =>
+  PublicKey.findProgramAddressSync([owner.toBuffer(), TOKEN_PROGRAM.toBuffer(), mint.toBuffer()], ATA_PROGRAM)[0];
+
+async function sha256(data: string): Promise<Buffer> {
+  return Buffer.from(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(data)));
+}
+
+function u64(n: number): Buffer {
+  if (!Number.isSafeInteger(n) || n < 0) throw new Error(`Bad amount ${n}`);
+  const b = Buffer.alloc(8);
+  b.writeBigUInt64LE(BigInt(n));
+  return b;
 }

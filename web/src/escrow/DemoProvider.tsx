@@ -1,6 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from "react";
+import type { OrderDetail } from "@cleardock/shared";
 import { PARTY, initialState, scanned, type DemoState, type OrderLike, type Role, type SignRequest, type Tx } from "./demo";
-import { signAndSend, simulatedSignature } from "./sign";
+import { signAndSend } from "./sign";
 import { WalletModal, type ModalState } from "./WalletModal";
 
 const STORAGE_KEY = "securoserv.demo.v1";
@@ -33,7 +34,7 @@ interface DemoContext {
   states: Record<string, DemoState>;
   update: (orderId: string, patch: Partial<DemoState> | ((st: DemoState) => Partial<DemoState>)) => void;
   scan: (orderId: string) => void;
-  sign: (orderId: string, request: SignRequest) => void;
+  sign: (orderId: string, request: SignRequest, detail: OrderDetail) => void;
   resetAll: () => void;
 }
 
@@ -41,7 +42,8 @@ const Ctx = createContext<DemoContext | null>(null);
 
 export function DemoProvider({ children }: { children: ReactNode }) {
   const [store, setStore] = useState<Stored>(load);
-  const [modal, setModal] = useState<(ModalState & { orderId: string; request: SignRequest }) | null>(null);
+  const [modal, setModal] = useState<(ModalState & { orderId: string; request: SignRequest; detail: OrderDetail }) | null>(null);
+  const supplierReady = useRef<(() => void) | null>(null);
   const timers = useRef<number[]>([]);
 
   useEffect(() => {
@@ -64,7 +66,7 @@ export function DemoProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const ensure: DemoContext["ensure"] = useCallback((orderId, detail) => {
-    setStore((s) => (s.orders[orderId] ? s : { ...s, orders: { ...s.orders, [orderId]: initialState(detail, simulatedSignature()) } }));
+    setStore((s) => (s.orders[orderId] ? s : { ...s, orders: { ...s.orders, [orderId]: initialState(detail) } }));
   }, []);
 
   const scan: DemoContext["scan"] = useCallback(
@@ -76,26 +78,36 @@ export function DemoProvider({ children }: { children: ReactNode }) {
   );
 
   const sign: DemoContext["sign"] = useCallback(
-    (orderId, request) => {
+    (orderId, request, detail) => {
       const me = PARTY[store.role];
-      setModal({
-        orderId,
-        request,
-        title: request.title,
-        rows: [...request.rows, ["Signer", `${me.name} · ${me.wallet}`], ["Memo", "SecuroServ PO-1001"]],
-        phase: "ask",
-      });
+      const signer: [string, string] = !request.chain
+        ? ["Signer", `${me.name} · ${me.wallet}`]
+        : request.chain.action === "settle"
+          ? ["Signers", "Buyer, then supplier, in Phantom"]
+          : ["Signer", "Buyer wallet in Phantom"];
+      setModal({ orderId, request, detail, title: request.title, rows: [...request.rows, signer], real: !!request.chain, phase: "ask" });
     },
     [store.role],
   );
 
   const confirm = async () => {
     if (!modal) return;
-    const { orderId, request } = modal;
-    setModal({ ...modal, phase: "sending" });
-    const tx: Tx = await signAndSend(request);
-    update(orderId, (st) => request.apply(tx, st));
-    setModal((m) => (m ? { ...m, phase: "done", tx } : m));
+    const { orderId, request, detail } = modal;
+    setModal({ ...modal, phase: "sending", status: undefined, error: undefined });
+    try {
+      const tx: Tx = await signAndSend(request, detail, {
+        status: (status) => setModal((m) => (m ? { ...m, phase: "sending", status } : m)),
+        waitForSupplier: (supplier, note) =>
+          new Promise<void>((resolve) => {
+            supplierReady.current = resolve;
+            setModal((m) => (m ? { ...m, phase: "switch", supplier, note } : m));
+          }),
+      });
+      update(orderId, (st) => request.apply(tx, st));
+      setModal((m) => (m ? { ...m, phase: "done", tx } : m));
+    } catch (err) {
+      setModal((m) => (m ? { ...m, phase: "error", error: (err as Error).message } : m));
+    }
   };
 
   const value: DemoContext = {
@@ -118,7 +130,14 @@ export function DemoProvider({ children }: { children: ReactNode }) {
   return (
     <Ctx.Provider value={value}>
       {children}
-      {modal && <WalletModal state={modal} onConfirm={confirm} onClose={() => setModal(null)} />}
+      {modal && (
+        <WalletModal
+          state={modal}
+          onConfirm={confirm}
+          onSupplierReady={() => supplierReady.current?.()}
+          onClose={() => setModal(null)}
+        />
+      )}
     </Ctx.Provider>
   );
 }
