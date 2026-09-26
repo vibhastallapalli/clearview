@@ -2,8 +2,8 @@
  * Devnet setup for CDT (ClearDock test dollars): a standard SPL token with 2 decimals.
  * Devnet only. Not real money, not USDC.
  *
- * Run from server/:
- *   npx tsx --env-file-if-exists=../.env scripts/setup-devnet.ts [--check] [--new-mint] [--buyer-target=1000]
+ * Run from server/ (or the repo root with -w server):
+ *   npm run setup:devnet -- [--check] [--new-mint] [--buyer-target=1000]
  *
  *   --check              read-only: verify mint, token accounts and balances, change nothing
  *   --new-mint           create a new CDT mint (refused if one is configured or recorded)
@@ -259,10 +259,9 @@ for (const p of problems) console.log(`✗ ${p}`);
 
 console.log(`\n.env values (public, safe to share):`);
 console.log(`DEMO_TOKEN_MINT=${mint.toBase58()}`);
-console.log(`VITE_DEMO_TOKEN_MINT=${mint.toBase58()}`);
 console.log(`DEMO_BUYER_WALLET=${buyer.toBase58()}`);
 console.log(`DEMO_SUPPLIER_WALLET=${supplier.toBase58()}`);
-console.log(`(shared/fixtures/supplier.json walletAddress should equal DEMO_SUPPLIER_WALLET)`);
+console.log(`(the server seeds the supplier wallet from DEMO_SUPPLIER_WALLET; after changing it, POST /api/dev/reset)`);
 
 if (problems.length) fail(`Setup incomplete: ${problems.length} problem(s) above.`);
 console.log(`\n✓ ${check ? "Check passed" : "Setup done"}: verified on devnet.`);
