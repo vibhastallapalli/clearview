@@ -64,6 +64,7 @@ Base `/api`. Errors are `{ error, code }` with `code` one of `not_found`, `bad_r
 | POST | `/orders/:id/payments/transaction` | `{ payer }` | `PaymentTransaction`: **unsigned**. 409 if approval stale, payment submitted/confirmed/unknown, or another wallet's tx could still land; 503 if RPC down |
 | POST | `/orders/:id/payments/submit` | `{ transaction }` (base64, **signed** by the buyer's wallet) | `OrderDetail`. Server checks it against the issued attempt, records the signature, broadcasts, then verifies. 409 (not broadcast) if the blockhash, fee payer or instructions changed |
 | POST | `/orders/:id/payments/confirm` | `{ signature }` | `OrderDetail`: re-check a submitted payment. 409 on mismatch, reused or unknown signature |
+| POST | `/orders/:id/escrow/events` | `{ action: "fund"|"accept_all"|"claim"|"settle", signature, escrowAddress? }` (`escrowAddress` required on the first event) | `OrderDetail` with `order.escrow` read from chain. Verifies the tx ran that instruction of `ESCROW_PROGRAM_ID` on that escrow, and the escrow account's order hash = `sha256(reference)`, supplier = verified wallet, mint = `DEMO_TOKEN_MINT`, buyer = `DEMO_BUYER_WALLET`. Same signature again = refresh. 409 on any mismatch; 501 if `ESCROW_PROGRAM_ID` unset |
 | POST | `/dev/reset` | | `{ ok, orderId, reference }`. Fresh demo order. An order that had a payment transaction is archived and the next one gets a new identity (`ord_1001_r2` / `PO-1001-R2`). 409 while a transaction could still land |
 
 ## Payment flow (server ↔ web)
@@ -85,6 +86,10 @@ Base `/api`. Errors are `{ error, code }` with `code` one of `not_found`, `bad_r
 **Approval gates.** Only `outcome: "match"` with no `flags`, a verified supplier, and a supplier wallet equal to `DEMO_SUPPLIER_WALLET` when that is set.
 
 **Config.** `DEMO_TOKEN_MINT` is the only mint setting; the browser gets it from `GET /config`. `DEMO_SUPPLIER_WALLET` seeds the supplier's wallet.
+
+## Escrow (Phase 2, program on devnet)
+
+Program `ESCROW_PROGRAM_ID` (also in `GET /config` as `escrowProgramId`). The escrow PDA is `["escrow", buyer, sha256(order.reference)]`, the vault is `["vault", escrow]`. The browser builds and signs escrow transactions (see `solana/escrow`), then reports each one to `/escrow/events`. An order with an escrow can't also be paid directly (`/payments` → 409), and a demo reset archives it (the reference is single-use because the PDA is keyed by it).
 
 ## Phase 2 (types exist, nothing built)
 

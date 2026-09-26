@@ -35,7 +35,7 @@ export function publicConfig(): PublicConfig {
     mint: configuredMint(),
     decimals: DECIMALS,
     tokenLabel: TOKEN_LABEL,
-    escrowProgramId: null,
+    escrowProgramId: process.env.ESCROW_PROGRAM_ID?.trim() || null,
   };
 }
 

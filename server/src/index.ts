@@ -27,6 +27,7 @@ import {
   submitSignedTransaction,
   type PaymentCtx,
 } from "./solana/payments.ts";
+import { escrowRouter } from "./escrow.ts";
 import { configuredMint, isValidAmount, isWallet, publicConfig, rpcUrl } from "./solana/tx.ts";
 import { analyzeDocument, analyzeScan, type MockScenario } from "./ai/analyze.ts";
 import { geminiEnabled } from "./ai/gemini.ts";
@@ -357,6 +358,7 @@ app.post(
       throw new HttpError(409, "stale_approval", "No valid approval for the current evidence.");
     // Idempotent: repeated clicks return the same payment.
     if (order.payment && order.payment.approvalId === approval.id) return res.json(detail(order));
+    if (order.escrow) throw new HttpError(409, "conflict", "This order is funded through escrow; pay by releasing the escrow, not directly.");
     const mint = configuredMint();
     if (!mint) throw new HttpError(409, "conflict", "DEMO_TOKEN_MINT is not set on the server.");
 
@@ -411,6 +413,10 @@ app.post(
     res.json(detail(order));
   }),
 );
+
+// ---------- escrow (P4): records verified on-chain escrow events ----------
+
+app.use(escrowRouter);
 
 // ---------- dev ----------
 
