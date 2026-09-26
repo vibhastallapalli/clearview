@@ -46,6 +46,13 @@ body {
   margin: 0;
   min-height: 100vh;
   line-height: 1.5;
+}
+
+/* The glass needs this backdrop. .app carries it too, so the UI renders
+   correctly inside any host page, not only when it owns <body>. */
+body,
+.app {
+  color: var(--text);
   background:
     radial-gradient(52rem 34rem at 0% -8%, rgba(34, 211, 238, 0.30), transparent 62%),
     radial-gradient(48rem 34rem at 100% 4%, rgba(59, 130, 246, 0.32), transparent 62%),
@@ -55,7 +62,8 @@ body {
 }
 
 /* Faint HUD grid behind everything; fades out toward the edges. */
-body::before {
+body::before,
+.app::before {
   content: "";
   position: fixed;
   inset: 0;
@@ -68,6 +76,10 @@ body::before {
   -webkit-mask-image: radial-gradient(ellipse at 50% 30%, #000 20%, transparent 75%);
   z-index: 0;
 }
+
+/* Own stacking context: the grid paints over .app's backdrop, under its content. */
+.app { position: relative; isolation: isolate; }
+.app::before { z-index: -1; }
 
 #root { position: relative; z-index: 1; }
 
