@@ -5,10 +5,11 @@
 
 const API = "https://generativelanguage.googleapis.com/v1beta/models";
 const TIMEOUT_MS = Number(process.env.GEMINI_TIMEOUT_MS) || 30_000;
-const RETRY_DELAY_MS = 2_000;
+// Waits before each retry. Free-tier keys hit 429/503 often; two short retries ride out most spikes.
+const RETRY_DELAYS_MS = [2_000, 5_000];
 
 export const geminiEnabled = () => Boolean(process.env.GEMINI_API_KEY);
-export const geminiModel = () => process.env.GEMINI_MODEL || "gemini-2.5-flash";
+export const geminiModel = () => process.env.GEMINI_MODEL || "gemini-3.8-flash";
 
 export class GeminiError extends Error {
   constructor(
@@ -25,13 +26,14 @@ export async function geminiJson(args: {
   file: { mimeType: string; data: Buffer };
   schema: object;
 }): Promise<unknown> {
-  try {
-    return await callOnce(args);
-  } catch (err) {
-    // One retry for rate limits, server errors and timeouts. Never for bad requests or bad output.
-    if (!(err instanceof GeminiError) || !err.retryable) throw err;
-    await new Promise((r) => setTimeout(r, RETRY_DELAY_MS));
-    return callOnce(args);
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await callOnce(args);
+    } catch (err) {
+      // Retry rate limits, server errors and timeouts. Never bad requests or bad output.
+      if (!(err instanceof GeminiError) || !err.retryable || attempt >= RETRY_DELAYS_MS.length) throw err;
+      await new Promise((r) => setTimeout(r, RETRY_DELAYS_MS[attempt]));
+    }
   }
 }
 
