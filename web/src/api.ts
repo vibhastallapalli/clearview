@@ -69,6 +69,10 @@ export const api = {
   confirmPayment: (orderId: string, signature: string) =>
     request<OrderDetail>(`/api/orders/${orderId}/payments/confirm`, json({ signature })),
 
+  // Server checks the landed transaction on devnet, then records the escrow account it reads (never client numbers).
+  escrowEvent: (orderId: string, body: { action: "fund" | "accept_all" | "claim" | "settle"; signature: string; escrowAddress: string }) =>
+    request<OrderDetail>(`/api/orders/${orderId}/escrow/events`, json(body)),
+
   reset: () => request("/api/dev/reset", { method: "POST" }),
 };
 

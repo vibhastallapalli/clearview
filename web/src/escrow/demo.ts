@@ -4,9 +4,9 @@ import type { Order } from "@cleardock/shared";
 export type OrderLike = { order: Order };
 
 // Client-side model of the $30 escrow demo (docs/escrow-rulebook.md). Every
-// money movement goes through a SignRequest so the simulated signer in
-// sign.ts can be swapped for Phantom + the Anchor program without touching
-// the screens.
+// money movement goes through a SignRequest. Requests with `chain` are real
+// devnet transactions to the escrow program (sign.ts); the rest (offers,
+// counters, rejections) are off-chain agreement steps and stay SIMULATED.
 
 export type Role = "buyer" | "supplier";
 export type Step = "delivered" | "scanning" | "report" | "claimed" | "offer" | "physical" | "settled";
@@ -74,9 +74,18 @@ export interface Tx {
   simulated: boolean;
 }
 
+/** An escrow program instruction. Amounts are CDT minor units (cents). */
+export type ChainAction =
+  | { action: "fund"; amount: number }
+  | { action: "accept_all" }
+  | { action: "claim"; accepted: number; claimed: number }
+  | { action: "settle"; toSupplier: number; toBuyer: number };
+
 export interface SignRequest {
   title: string;
   rows: [string, string][];
+  /** Set = a real devnet transaction. Unset = simulated off-chain step. */
+  chain?: ChainAction;
   apply: (tx: Tx, st: DemoState) => Partial<DemoState>;
 }
 
@@ -178,7 +187,7 @@ export function linesFor(detail: OrderLike | null): Line[] {
 export const totalOf = (lines: Line[]) => lines.reduce((sum, l) => sum + l.priceMinor, 0);
 export const claimedOf = (lines: Line[]) => lines.filter((l) => l.claim).reduce((sum, l) => sum + l.priceMinor, 0);
 
-export function initialState(detail: OrderLike | null, fundSig: string): DemoState {
+export function initialState(detail: OrderLike | null): DemoState {
   const lines = linesFor(detail);
   const total = totalOf(lines);
   return {
@@ -192,7 +201,6 @@ export function initialState(detail: OrderLike | null, fundSig: string): DemoSta
     rejected: false,
     events: [
       { label: "Both parties signed the order terms", detail: "3 × Product A 500 g at $10.00 · 3-day inspection window", at: "09:12", sim: true },
-      { label: "Buyer funded escrow", detail: `${usd(total)} CDT locked in the escrow program`, at: "09:14", sig: fundSig, sim: true },
       { label: "Carrier: delivered", detail: "Inspection window starts", at: "10:42", sim: true },
     ],
     esc: { released: 0, refunded: 0, locked: 0, status: "funded" },
@@ -201,6 +209,21 @@ export function initialState(detail: OrderLike | null, fundSig: string): DemoSta
 
 const withEvent = (st: DemoState, e: Omit<EscrowEvent, "at">): EscrowEvent[] => [...st.events, { at: now(), ...e }];
 const txEvent = (tx: Tx) => ({ sig: tx.sig, sim: tx.simulated });
+
+export function fundRequest(st: DemoState, reference: string): SignRequest {
+  const total = totalOf(st.lines);
+  return {
+    title: "Fund escrow",
+    rows: [
+      ["Order", reference],
+      ["Lock in escrow", `${usd(total)} CDT`],
+    ],
+    chain: { action: "fund", amount: total },
+    apply: (tx, s) => ({
+      events: withEvent(s, { label: "Buyer funded escrow", detail: `${usd(total)} CDT locked in the escrow program`, ...txEvent(tx) }),
+    }),
+  };
+}
 
 export const scanned = (st: DemoState): Partial<DemoState> => ({
   step: "report",
