@@ -68,7 +68,7 @@ export function CapturePage() {
     <div className="capture">
       <div className="capture-head">
         <BrandMark />
-        <span className="eyebrow">ClearDock · receiving</span>
+        <span className="eyebrow">SecuroServ · receiving</span>
       </div>
       <h1>Capture delivery</h1>
       <p className="muted">
