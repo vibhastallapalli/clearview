@@ -6,14 +6,15 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { ASSOCIATED_TOKEN_PROGRAM_ID, TOKEN_PROGRAM_ID } from "@solana/spl-token";
-import { Keypair, PublicKey, Transaction } from "@solana/web3.js";
+import { ComputeBudgetProgram, Keypair, PublicKey, SendTransactionError, Transaction } from "@solana/web3.js";
 import type { Order } from "@cleardock/shared";
-import { ata, buildPaymentTx, MEMO_PROGRAM_ID, verifyPayment } from "./tx.ts";
+import { ata, base58, buildPaymentTx, MEMO_PROGRAM_ID, verifyPayment } from "./tx.ts";
 import {
   assertEvidenceUnlocked,
   confirmPayment,
   HttpError,
   issueTransaction,
+  submitSignedTransaction,
   type PaymentAttempt,
   type PaymentCtx,
   type Rpc,
@@ -30,6 +31,10 @@ function fakeRpc() {
     txs: new Map<string, any>(),
     sigsForAddress: [] as { signature: string; blockTime: number | null; memo: string | null }[],
     blockhashes: 0,
+    sent: [] as string[],
+    sendError: null as Error | null,
+    /** Called with the signature when a transaction is broadcast; set to make it "land". */
+    onSend: (_sig: string) => {},
   };
   const guard = () => {
     if (s.down) throw new Error("fetch failed");
@@ -51,6 +56,14 @@ function fakeRpc() {
     async getParsedAccountInfo() {
       guard();
       return { context: { slot: 1 }, value: { owner: TOKEN_PROGRAM_ID, data: { program: "spl-token", space: 82, parsed: { type: "mint", info: { decimals: 2 } } } } };
+    },
+    async sendRawTransaction(raw: Buffer) {
+      guard();
+      if (s.sendError) throw s.sendError;
+      const sig = base58(Transaction.from(raw).signature!);
+      s.sent.push(sig);
+      s.onSend(sig);
+      return sig;
     },
     async getSignaturesForAddress(_a: unknown, opts: { limit: number; before?: string }) {
       guard();
@@ -305,24 +318,6 @@ test("confirm: a signature already used by another order is refused", async () =
   assert.notEqual(two.payment!.status, "confirmed");
 });
 
-test("confirm: not found yet stays submitted; after expiry it fails and a new transaction can be issued", async () => {
-  const { payer, order, ctx, attempts, s } = setup();
-  const first = await issueTransaction(order, payer, ctx);
-  const sig = fakeSig();
-  await confirmPayment(order, sig, ctx);
-  assert.equal(order.payment!.status, "submitted");
-  await rejects(issueTransaction(order, payer, ctx), 409);
-
-  s.height += 151; // past lastValidBlockHeight
-  await confirmPayment(order, sig, ctx);
-  assert.equal(order.payment!.status, "failed");
-  assert.equal(attempts[0].status, "expired");
-
-  const second = await issueTransaction(order, payer, ctx);
-  assert.notEqual(second.transaction, first.transaction);
-  assert.equal(attempts.length, 2);
-});
-
 test("expired attempt that actually landed is found and confirmed instead of issuing a duplicate", async () => {
   const { payer, order, ctx, attempts, s } = setup();
   await issueTransaction(order, payer, ctx);
@@ -397,21 +392,124 @@ test("recovery stops at transactions older than the attempt", async () => {
   assert.equal(attempts.length, 2);
 });
 
-test("a wallet-reblockhashed transaction binds by payment memo + payer and is still fully verified", async () => {
-  const { payer, order, ctx, attempts, s } = setup();
-  await issueTransaction(order, payer, ctx);
-  const good = fakeSig();
-  s.txs.set(good, landed(attempts[0], (tx) => (tx.transaction.message.recentBlockhash = addr())));
-  await confirmPayment(order, good, ctx);
-  assert.equal(order.payment!.status, "confirmed");
 
+// ---------- supported signing policy: wallet signs, server checks + broadcasts ----------
+
+/** Buyer with a real keypair, so tests can sign like the wallet would. */
+async function signed(edit: (tx: Transaction) => void = () => {}) {
+  const t = setup();
+  const buyer = Keypair.generate();
+  const { transaction } = await issueTransaction(t.order, buyer.publicKey.toBase58(), t.ctx);
+  const tx = Transaction.from(Buffer.from(transaction, "base64"));
+  edit(tx);
+  tx.sign(buyer);
+  return { ...t, buyer, signedB64: tx.serialize().toString("base64"), sig: base58(tx.signature!) };
+}
+
+test("submit: signed issued transaction is recorded, broadcast and verified", async () => {
+  const t = await signed();
+  t.s.onSend = (sig) => t.s.txs.set(sig, landed(t.attempts[0]));
+  await submitSignedTransaction(t.order, t.signedB64, t.ctx);
+  assert.deepEqual(t.s.sent, [t.sig]);
+  assert.equal(t.attempts[0].signature, t.sig);
+  assert.equal(t.order.payment!.status, "confirmed");
+});
+
+test("submit: compute-budget instructions added by a wallet are allowed", async () => {
+  const t = await signed((tx) => tx.instructions.unshift(ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 1 })));
+  await submitSignedTransaction(t.order, t.signedB64, t.ctx);
+  assert.deepEqual(t.s.sent, [t.sig]);
+});
+
+test("POLICY: a wallet-changed blockhash is refused and never broadcast", async () => {
+  const t = await signed((tx) => (tx.recentBlockhash = addr()));
+  await rejects(submitSignedTransaction(t.order, t.signedB64, t.ctx), 409);
+  assert.deepEqual(t.s.sent, []);
+  assert.equal(t.order.payment!.status, "awaiting_signature");
+});
+
+test("POLICY: a changed amount or memo is refused and never broadcast", async () => {
+  const amount = await signed((tx) => (tx.instructions[1].data[1] ^= 1)); // amount byte
+  await rejects(submitSignedTransaction(amount.order, amount.signedB64, amount.ctx), 409);
+  const memo = await signed((tx) => (tx.instructions[2].data = Buffer.from("ClearDock PO-9 pay_9")));
+  await rejects(submitSignedTransaction(memo.order, memo.signedB64, memo.ctx), 409);
+  assert.deepEqual([...amount.s.sent, ...memo.s.sent], []);
+});
+
+test("submit: missing wallet signature is refused and never broadcast", async () => {
+  const t = setup();
+  const buyer = Keypair.generate();
+  const { transaction } = await issueTransaction(t.order, buyer.publicKey.toBase58(), t.ctx);
+  await rejects(submitSignedTransaction(t.order, transaction, t.ctx), 400);
+  assert.deepEqual(t.s.sent, []);
+});
+
+test("submit: lost broadcast response → unknown with the signature already recorded; no replacement", async () => {
+  const t = await signed();
+  t.s.sendError = new Error("socket hang up");
+  await submitSignedTransaction(t.order, t.signedB64, t.ctx);
+  assert.equal(t.order.payment!.status, "unknown");
+  assert.equal(t.attempts[0].signature, t.sig);
+  t.s.sendError = null;
+  await rejects(issueTransaction(t.order, t.buyer.publicKey.toBase58(), t.ctx), 409);
+});
+
+test("submit: preflight rejection → failed; while the blockhash is valid, a retry gets the SAME transaction", async () => {
+  const t = await signed();
+  t.s.sendError = new SendTransactionError({ action: "simulate", signature: "", transactionMessage: "insufficient funds" });
+  await submitSignedTransaction(t.order, t.signedB64, t.ctx);
+  assert.equal(t.order.payment!.status, "failed");
+  const again = await issueTransaction(t.order, t.buyer.publicKey.toBase58(), t.ctx);
+  assert.equal(again.transaction, t.attempts[0].txBase64);
+  assert.equal(t.attempts.length, 1);
+});
+
+test("submitted but not landed: stays submitted, then fails only after the issued blockhash expired; then a new tx", async () => {
+  const t = await signed();
+  await submitSignedTransaction(t.order, t.signedB64, t.ctx);
+  assert.equal(t.order.payment!.status, "submitted");
+  await rejects(issueTransaction(t.order, t.buyer.publicKey.toBase58(), t.ctx), 409);
+  t.s.height += 151;
+  await confirmPayment(t.order, t.sig, t.ctx);
+  assert.equal(t.order.payment!.status, "failed");
+  assert.equal(t.attempts[0].status, "expired");
+  await issueTransaction(t.order, t.buyer.publicKey.toBase58(), t.ctx);
+  assert.equal(t.attempts.length, 2);
+});
+
+test("POLICY: an unknown signature that isn't found is not declared 'can never land'", async () => {
+  const { payer, order, ctx } = setup();
+  await issueTransaction(order, payer, ctx);
+  await rejects(confirmPayment(order, fakeSig(), ctx), 409);
+  assert.equal(order.payment!.status, "awaiting_signature");
+});
+
+test("POLICY: our memo landing with a foreign blockhash freezes the payment; no replacement is issued", async () => {
+  // via /confirm
+  const one = setup();
+  await issueTransaction(one.order, one.payer, one.ctx);
+  const sig = fakeSig();
+  one.s.txs.set(sig, landed(one.attempts[0], (tx) => (tx.transaction.message.recentBlockhash = addr())));
+  await rejects(confirmPayment(one.order, sig, one.ctx), 409);
+  assert.equal(one.order.payment!.status, "unknown");
+  one.s.height += 151;
+  await rejects(issueTransaction(one.order, one.payer, one.ctx), 409);
+  assert.equal(one.attempts.length, 1);
+
+  // via the expiry sweep (browser never reported it)
   const two = setup();
   await issueTransaction(two.order, two.payer, two.ctx);
-  const bad = fakeSig();
-  two.s.txs.set(bad, landed(two.attempts[0], (tx) => {
-    tx.transaction.message.recentBlockhash = addr();
-    transferInfo(tx).tokenAmount.amount = "1";
-  }));
-  await rejects(confirmPayment(two.order, bad, two.ctx), 409);
-  assert.notEqual(two.order.payment!.status, "confirmed");
+  const sig2 = fakeSig();
+  two.s.txs.set(sig2, landed(two.attempts[0], (tx) => (tx.transaction.message.recentBlockhash = addr())));
+  two.s.sigsForAddress = [{ signature: sig2, blockTime: Math.floor(Date.now() / 1000), memo: `[1] ${two.attempts[0].memo}` }];
+  two.s.height += 151;
+  await rejects(issueTransaction(two.order, two.payer, two.ctx), 409);
+  assert.equal(two.order.payment!.status, "unknown");
+  assert.equal(two.attempts.length, 1);
+  await rejects(assertEvidenceUnlocked(two.order, two.ctx), 409);
+});
+
+test("base58 matches the known encoding", () => {
+  assert.equal(base58(new Uint8Array([0, 0, 1])), "112");
+  assert.equal(base58(new PublicKey("11111111111111111111111111111112").toBytes()), "11111111111111111111111111111112");
 });
