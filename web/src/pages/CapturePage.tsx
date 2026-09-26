@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
 import { api } from "../api";
+import { BrandMark } from "../components/Layout";
 
 /**
  * Opened on a phone by scanning the QR code on the order screen.
@@ -65,10 +66,24 @@ export function CapturePage() {
 
   return (
     <div className="capture">
+      <div className="capture-head">
+        <BrandMark />
+        <span className="eyebrow">ClearDock · receiving</span>
+      </div>
       <h1>Capture delivery</h1>
-      <p className="muted">Order {ref ?? "…"} · lay packages out with labels facing up</p>
+      <p className="muted">
+        Order <span className="mono">{ref ?? "…"}</span> · lay packages out with labels facing up
+      </p>
 
-      {!camError && <video ref={videoRef} autoPlay playsInline muted className="viewfinder" />}
+      {!camError && (
+        <div className="viewfinder-frame">
+          <video ref={videoRef} autoPlay playsInline muted className="viewfinder" />
+          <span className="corner tl" aria-hidden="true" />
+          <span className="corner tr" aria-hidden="true" />
+          <span className="corner bl" aria-hidden="true" />
+          <span className="corner br" aria-hidden="true" />
+        </div>
+      )}
       {camError && <p className="warn-text">{camError}</p>}
 
       {mock && (
