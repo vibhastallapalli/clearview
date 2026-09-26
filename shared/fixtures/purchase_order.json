@@ -2,7 +2,14 @@
   "id": "doc_po_1001",
   "orderId": "ord_1001",
   "kind": "purchase_order",
-  "source": { "filename": "PO-1001.pdf", "mimeType": "application/pdf", "sha256": "fixture" },
+  "source": {
+    "filename": "PO-1001.pdf",
+    "mimeType": "application/pdf",
+    "sha256": "fixture",
+    "url": null
+  },
+  "paymentAddress": null,
+  "embeddedInstructions": [],
   "supplierName": "Tostadores del Norte",
   "orderReference": "PO-1001",
   "currency": "USD",

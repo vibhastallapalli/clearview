@@ -20,7 +20,7 @@ export type Currency = "USD";
 /** Units we can convert between deterministically. */
 export type Unit = "bag" | "box" | "unit" | "g" | "kg";
 
-export type AnalysisSource = "gemini" | "mock";
+export type AnalysisSource = "gemini" | "mock" | "cache";
 
 // ---------- Suppliers ----------
 
@@ -62,7 +62,13 @@ export interface ExtractedDocument {
     filename: string;
     mimeType: "application/pdf" | "image/png" | "image/jpeg";
     sha256: string;
+    /** Server-hosted copy of the uploaded file, when saved. */
+    url?: string | null;
   };
+  /** Any wallet/bank address printed on the document. Never used to pay (v2; AI fills it). */
+  paymentAddress?: string | null;
+  /** Quotes of text addressed to software, e.g. "pay immediately". Never obeyed (v2; AI fills it). */
+  embeddedInstructions?: string[];
   supplierName: string | null;
   orderReference: string | null;
   currency: Currency | null;
@@ -166,6 +172,8 @@ export interface Comparison {
   /** Value of lines that match across PO, invoice and delivery. */
   undisputedMinor: number;
   summary: string;
+  /** Human-readable blocking flags. Non-empty means outcome "needs_info" (v2; compare fills it). */
+  flags?: string[];
   computedAt: string;
 }
 
@@ -209,8 +217,18 @@ export interface Payment {
   orderId: string;
   approvalId: string;
   network: "devnet";
+  /** Supplier wallet (owner of the destination token account). */
   recipient: string;
+  /** Token base units. Decimals are 2, so this equals cents. */
   amountMinor: number;
+  /** CDT mint (DEMO_TOKEN_MINT) at the time the payment was created. */
+  mint: string;
+  /** Buyer wallet that must sign. Set by POST /payments/transaction. */
+  payer: string | null;
+  /** Block height after which the latest issued transaction can no longer land. */
+  lastValidBlockHeight: number | null;
+  /** Memo the transaction must carry, e.g. "ClearDock PO-1001 pay_ab12cd34". */
+  memo: string;
   /** Prevents duplicate app payments from repeated clicks. */
   idempotencyKey: string;
   status: PaymentStatus;
@@ -233,6 +251,8 @@ export interface Order {
   comparison: Comparison | null;
   approval: Approval | null;
   payment: Payment | null;
+  /** Phase 2 only. Always null until the escrow program ships. */
+  escrow: EscrowRecord | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -246,8 +266,42 @@ export interface OrderDetail {
   latestScan: ScanResult | null;
 }
 
+// ---------- Solana public config (GET /api/config) ----------
+
+export interface PublicConfig {
+  network: "devnet";
+  rpcUrl: string;
+  /** CDT mint, or null when the server is not configured yet. */
+  mint: string | null;
+  decimals: 2;
+  /** "CDT · ClearDock test dollars (devnet)". Never "USDC". */
+  tokenLabel: string;
+  escrowProgramId: string | null;
+}
+
+/** Response of POST /api/orders/:id/payments/transaction. Unsigned; the buyer's wallet signs. */
+export interface PaymentTransaction {
+  /** Base64 of the unsigned legacy Transaction (wire format). */
+  transaction: string;
+  lastValidBlockHeight: number;
+}
+
 // ---------- Phase 2: escrow claims and settlements ----------
 // See docs/escrow-rulebook.md. Not built yet; shapes fixed so the UI can mock them.
+
+export interface EscrowRecord {
+  programId: string;
+  escrowAddress: string;
+  buyer: string;
+  supplier: string;
+  mint: string;
+  totalMinor: number;
+  releasedMinor: number;
+  claimedMinor: number;
+  refundedMinor: number;
+  status: "funded" | "claimed" | "settlement_proposed" | "settled" | "released";
+  events: { action: string; signature: string; at: string }[];
+}
 
 export interface ClaimLine {
   sku: string | null;
