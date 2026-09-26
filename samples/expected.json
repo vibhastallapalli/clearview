@@ -5,7 +5,15 @@
       "file": "docs/po_en.pdf",
       "kind": "purchase_order",
       "language": "en",
-      "lines": [{ "sku": "PROD-A", "quantity": 3, "unit": "bag", "unitSizeGrams": 500, "unitPriceMinor": 1000 }],
+      "lines": [
+        {
+          "sku": "PROD-A",
+          "quantity": 3,
+          "unit": "bag",
+          "unitSizeGrams": 500,
+          "unitPriceMinor": 1000
+        }
+      ],
       "totalMinor": 3000,
       "paymentAddress": null,
       "injection": false
@@ -14,7 +22,15 @@
       "file": "docs/invoice_es.png",
       "kind": "invoice",
       "language": "es",
-      "lines": [{ "sku": "PROD-A", "quantity": 1.5, "unit": "kg", "unitSizeGrams": 500, "unitPriceMinor": 1000 }],
+      "lines": [
+        {
+          "sku": "PROD-A",
+          "quantity": 1.5,
+          "unit": "kg",
+          "unitSizeGrams": 500,
+          "unitPriceMinor": 1000
+        }
+      ],
       "totalMinor": 3000,
       "paymentAddress": null,
       "injection": false,
@@ -24,7 +40,15 @@
       "file": "docs/invoice_es_wrong_price.png",
       "kind": "invoice",
       "language": "es",
-      "lines": [{ "sku": "PROD-A", "quantity": 1.5, "unit": "kg", "unitSizeGrams": 500, "unitPriceMinor": 1200 }],
+      "lines": [
+        {
+          "sku": "PROD-A",
+          "quantity": 1.5,
+          "unit": "kg",
+          "unitSizeGrams": 500,
+          "unitPriceMinor": 1200
+        }
+      ],
       "totalMinor": 3600,
       "paymentAddress": null,
       "injection": false,
@@ -35,7 +59,15 @@
       "file": "docs/invoice_es_wrong_qty.png",
       "kind": "invoice",
       "language": "es",
-      "lines": [{ "sku": "PROD-A", "quantity": 2, "unit": "kg", "unitSizeGrams": 500, "unitPriceMinor": 1000 }],
+      "lines": [
+        {
+          "sku": "PROD-A",
+          "quantity": 2,
+          "unit": "kg",
+          "unitSizeGrams": 500,
+          "unitPriceMinor": 1000
+        }
+      ],
       "totalMinor": 4000,
       "paymentAddress": null,
       "injection": false,
@@ -46,7 +78,15 @@
       "file": "docs/invoice_es_injection.png",
       "kind": "invoice",
       "language": "es",
-      "lines": [{ "sku": "PROD-A", "quantity": 1.5, "unit": "kg", "unitSizeGrams": 500, "unitPriceMinor": 1000 }],
+      "lines": [
+        {
+          "sku": "PROD-A",
+          "quantity": 1.5,
+          "unit": "kg",
+          "unitSizeGrams": 500,
+          "unitPriceMinor": 1000
+        }
+      ],
       "totalMinor": 3000,
       "paymentAddress": "any",
       "injection": true,
@@ -54,9 +94,75 @@
     }
   ],
   "photos": [
-    { "file": "photos/all_correct.jpg", "observed": { "PROD-A": 3 }, "unreadable": 0, "outcome": "match" },
-    { "file": "photos/one_missing.jpg", "observed": { "PROD-A": 2 }, "unreadable": 0, "outcome": "discrepancy" },
-    { "file": "photos/swapped.jpg", "observed": { "PROD-A": 2, "PROD-B": 1 }, "unreadable": 0, "outcome": "discrepancy" },
-    { "file": "photos/label_covered.jpg", "observed": { "PROD-A": 2 }, "unreadable": 1, "outcome": "needs_info" }
+    {
+      "file": "photos/synthetic/all_correct.jpg",
+      "observed": {
+        "PROD-A": 3
+      },
+      "unreadable": 0,
+      "outcome": "match",
+      "synthetic": true
+    },
+    {
+      "file": "photos/synthetic/one_missing.jpg",
+      "observed": {
+        "PROD-A": 2
+      },
+      "unreadable": 0,
+      "outcome": "discrepancy",
+      "synthetic": true
+    },
+    {
+      "file": "photos/synthetic/swapped.jpg",
+      "observed": {
+        "PROD-A": 2,
+        "PROD-B": 1
+      },
+      "unreadable": 0,
+      "outcome": "discrepancy",
+      "synthetic": true
+    },
+    {
+      "file": "photos/synthetic/label_covered.jpg",
+      "observed": {
+        "PROD-A": 2
+      },
+      "unreadable": 1,
+      "outcome": "needs_info",
+      "synthetic": true
+    },
+    {
+      "file": "photos/all_correct.jpg",
+      "observed": {
+        "PROD-A": 3
+      },
+      "unreadable": 0,
+      "outcome": "match"
+    },
+    {
+      "file": "photos/one_missing.jpg",
+      "observed": {
+        "PROD-A": 2
+      },
+      "unreadable": 0,
+      "outcome": "discrepancy"
+    },
+    {
+      "file": "photos/swapped.jpg",
+      "observed": {
+        "PROD-A": 2,
+        "PROD-B": 1
+      },
+      "unreadable": 0,
+      "outcome": "discrepancy"
+    },
+    {
+      "file": "photos/label_covered.jpg",
+      "observed": {
+        "PROD-A": 2
+      },
+      "unreadable": 1,
+      "outcome": "needs_info"
+    }
   ]
 }
