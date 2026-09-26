@@ -9,5 +9,5 @@ echo "deployer: $(solana-keygen pubkey $K)  balance: $(solana -ud balance $(sola
 [ "$(solana-keygen pubkey /k/escrow-program-keypair.json)" = "Bk4DD3mGCJRFATHTnLqyoxiWDm65nfMcPfE7oduiQzAt" ]
 sha256sum /work/target/deploy/escrow.so
 solana -ud -k $K program deploy /work/target/deploy/escrow.so --program-id /k/escrow-program-keypair.json --max-sign-attempts 50 --with-compute-unit-price 10000
-solana -ud program show Bk4DD3mGCJRFATHTnLqyoxiWDm65nfMcPfE7oduiQzAt
+solana -ud -k $K program show Bk4DD3mGCJRFATHTnLqyoxiWDm65nfMcPfE7oduiQzAt
 echo "balance after: $(solana -ud balance $(solana-keygen pubkey $K))"
