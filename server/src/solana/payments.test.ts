@@ -28,7 +28,7 @@ function fakeRpc() {
     height: 1000,
     down: false,
     txs: new Map<string, any>(),
-    sigsForAddress: [] as { signature: string; blockTime: number | null }[],
+    sigsForAddress: [] as { signature: string; blockTime: number | null; memo: string | null }[],
     blockhashes: 0,
   };
   const guard = () => {
@@ -52,9 +52,10 @@ function fakeRpc() {
       guard();
       return { context: { slot: 1 }, value: { owner: TOKEN_PROGRAM_ID, data: { program: "spl-token", space: 82, parsed: { type: "mint", info: { decimals: 2 } } } } };
     },
-    async getSignaturesForAddress() {
+    async getSignaturesForAddress(_a: unknown, opts: { limit: number; before?: string }) {
       guard();
-      return s.sigsForAddress;
+      const start = opts.before ? s.sigsForAddress.findIndex((x) => x.signature === opts.before) + 1 : 0;
+      return s.sigsForAddress.slice(start, start + opts.limit);
     },
   };
   return { s, rpc: rpc as unknown as Rpc };
@@ -282,7 +283,10 @@ test("confirm: a transaction ClearDock never issued is rejected and state is res
   const { payer, order, ctx, attempts, s } = setup();
   await issueTransaction(order, payer, ctx);
   const sig = fakeSig();
-  s.txs.set(sig, landed(attempts[0], (tx) => (tx.transaction.message.recentBlockhash = addr())));
+  s.txs.set(sig, landed(attempts[0], (tx) => {
+    tx.transaction.message.recentBlockhash = addr();
+    tx.transaction.message.instructions[2].parsed = "ClearDock PO-9999 pay_other";
+  }));
   await rejects(confirmPayment(order, sig, ctx), 409);
   assert.equal(order.payment!.status, "awaiting_signature");
   assert.equal(order.payment!.signature, null);
@@ -324,7 +328,7 @@ test("expired attempt that actually landed is found and confirmed instead of iss
   await issueTransaction(order, payer, ctx);
   const sig = fakeSig();
   s.txs.set(sig, landed(attempts[0]));
-  s.sigsForAddress = [{ signature: sig, blockTime: Math.floor(Date.now() / 1000) }];
+  s.sigsForAddress = [{ signature: sig, blockTime: Math.floor(Date.now() / 1000), memo: `[20] ${attempts[0].memo}` }];
   s.height += 151;
   await rejects(issueTransaction(order, payer, ctx), 409);
   assert.equal(order.payment!.status, "confirmed");
@@ -354,4 +358,60 @@ test("evidence is locked while an issued transaction could land, unlocked once i
   s.down = false;
   await assertEvidenceUnlocked(order, ctx);
   assert.equal(attempts[0].status, "expired");
+});
+
+// ---------- recovery when the browser never reported the signature ----------
+
+const noise = (n: number) =>
+  Array.from({ length: n }, () => ({ signature: fakeSig(), blockTime: Math.floor(Date.now() / 1000), memo: null }));
+
+test("recovery pages past unrelated buyer transactions to find the landed one", async () => {
+  const { payer, order, ctx, attempts, s } = setup();
+  await issueTransaction(order, payer, ctx);
+  const sig = fakeSig();
+  s.txs.set(sig, landed(attempts[0]));
+  s.sigsForAddress = [...noise(70), { signature: sig, blockTime: Math.floor(Date.now() / 1000), memo: `[1] ${attempts[0].memo}` }];
+  s.height += 151;
+  await rejects(issueTransaction(order, payer, ctx), 409);
+  assert.equal(order.payment!.status, "confirmed");
+});
+
+test("recovery refuses to declare expiry when it can't scan back to the issue time", async () => {
+  const { payer, order, ctx, attempts, s } = setup();
+  await issueTransaction(order, payer, ctx);
+  s.sigsForAddress = noise(600);
+  s.height += 151;
+  await rejects(issueTransaction(order, payer, ctx), 503);
+  await rejects(assertEvidenceUnlocked(order, ctx), 409);
+  assert.equal(attempts[0].status, "issued");
+  assert.equal(attempts.length, 1);
+});
+
+test("recovery stops at transactions older than the attempt", async () => {
+  const { payer, order, ctx, attempts, s } = setup();
+  await issueTransaction(order, payer, ctx);
+  s.sigsForAddress = [...noise(3), ...noise(100).map((x) => ({ ...x, blockTime: 1 }))];
+  s.height += 151;
+  await issueTransaction(order, payer, ctx);
+  assert.equal(attempts[0].status, "expired");
+  assert.equal(attempts.length, 2);
+});
+
+test("a wallet-reblockhashed transaction binds by payment memo + payer and is still fully verified", async () => {
+  const { payer, order, ctx, attempts, s } = setup();
+  await issueTransaction(order, payer, ctx);
+  const good = fakeSig();
+  s.txs.set(good, landed(attempts[0], (tx) => (tx.transaction.message.recentBlockhash = addr())));
+  await confirmPayment(order, good, ctx);
+  assert.equal(order.payment!.status, "confirmed");
+
+  const two = setup();
+  await issueTransaction(two.order, two.payer, two.ctx);
+  const bad = fakeSig();
+  two.s.txs.set(bad, landed(two.attempts[0], (tx) => {
+    tx.transaction.message.recentBlockhash = addr();
+    transferInfo(tx).tokenAmount.amount = "1";
+  }));
+  await rejects(confirmPayment(two.order, bad, two.ctx), 409);
+  assert.notEqual(two.order.payment!.status, "confirmed");
 });
