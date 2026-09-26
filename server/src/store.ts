@@ -9,6 +9,7 @@ import type {
   ScanResult,
   Supplier,
 } from "@cleardock/shared";
+import type { PaymentAttempt } from "./solana/payments.ts";
 
 /**
  * Tiny JSON-file store. Good enough for a hackathon demo; swap for SQLite
@@ -28,6 +29,8 @@ interface Db {
   sessions: CaptureSession[];
   captures: Capture[];
   scans: ScanResult[];
+  /** Every unsigned payment transaction ever issued. Survives approval voids. */
+  paymentAttempts: PaymentAttempt[];
 }
 
 mkdirSync(UPLOAD_DIR, { recursive: true });
@@ -51,6 +54,7 @@ function seed(): Db {
         comparison: null,
         approval: null,
         payment: null,
+        escrow: null,
         createdAt: now,
         updatedAt: now,
       },
@@ -59,10 +63,14 @@ function seed(): Db {
     sessions: [],
     captures: [],
     scans: [],
+    paymentAttempts: [],
   };
 }
 
 export const db: Db = existsSync(DB_FILE) ? JSON.parse(readFileSync(DB_FILE, "utf8")) : seed();
+// Older db.json files predate contracts v2.
+db.paymentAttempts ??= [];
+for (const o of db.orders) o.escrow ??= null;
 
 export function save() {
   writeFileSync(DB_FILE, JSON.stringify(db, null, 2));

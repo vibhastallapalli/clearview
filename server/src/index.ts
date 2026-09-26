@@ -15,7 +15,17 @@ import {
   type OrderDetail,
   type SensorReading,
 } from "@cleardock/shared";
+import { Connection } from "@solana/web3.js";
 import { db, id, resetDb, save, UPLOAD_DIR } from "./store.ts";
+import {
+  assertEvidenceUnlocked,
+  confirmPayment,
+  hasIssuedAttempt,
+  HttpError,
+  issueTransaction,
+  type PaymentCtx,
+} from "./solana/payments.ts";
+import { configuredMint, isValidAmount, isWallet, publicConfig, rpcUrl } from "./solana/tx.ts";
 import { analyzeDocument, analyzeScan, type MockScenario } from "./ai/analyze.ts";
 import { geminiEnabled } from "./ai/gemini.ts";
 
@@ -31,11 +41,6 @@ const SESSION_MINUTES = 15;
 
 // ---------- helpers ----------
 
-class HttpError extends Error {
-  constructor(public status: number, public code: ApiError["code"], message: string) {
-    super(message);
-  }
-}
 const wrap =
   (fn: (req: Request, res: Response) => Promise<unknown> | unknown) =>
   (req: Request, res: Response, next: NextFunction) =>
@@ -43,6 +48,17 @@ const wrap =
 
 const now = () => new Date().toISOString();
 const sha256 = (buf: Buffer) => createHash("sha256").update(buf).digest("hex");
+
+const solana: PaymentCtx = {
+  rpc: new Connection(rpcUrl(), "confirmed"),
+  get attempts() {
+    return db.paymentAttempts; // getter: resetDb swaps the array
+  },
+  save,
+  newId: id,
+};
+
+const LOCKED = "A payment transaction was issued and could still land; evidence is locked until it expires or confirms.";
 
 function getOrder(orderId: string): Order {
   const order = db.orders.find((o) => o.id === orderId);
@@ -63,8 +79,9 @@ function detail(order: Order): OrderDetail {
 
 /** Any change to evidence bumps the revision, recomputes, and voids old approvals. */
 function evidenceChanged(order: Order) {
-  const paying = order.payment && ["submitted", "confirmed"].includes(order.payment.status);
+  const paying = order.payment && ["submitted", "unknown", "confirmed"].includes(order.payment.status);
   if (paying) throw new HttpError(409, "conflict", "Payment already submitted; evidence is locked.");
+  if (hasIssuedAttempt(order.id, db.paymentAttempts)) throw new HttpError(409, "conflict", LOCKED);
 
   order.evidenceRevision += 1;
   order.approval = null;
@@ -101,6 +118,7 @@ async function ingestCapture(args: {
 }) {
   const { order, file } = args;
   if (!file.mimetype.startsWith("image/")) throw new HttpError(400, "bad_request", "Capture must be an image");
+  await assertEvidenceUnlocked(order, solana);
 
   const captureId = id("cap");
   const ext = file.mimetype === "image/png" ? "png" : "jpg";
@@ -119,11 +137,13 @@ async function ingestCapture(args: {
   };
   db.captures.push(capture);
 
+  const prevStatus = order.status;
   order.status = "analyzing";
   save();
 
+  let scan;
   try {
-    const scan = await analyzeScan({
+    scan = await analyzeScan({
       orderId: order.id,
       captureId,
       scanId: id("scan"),
@@ -131,22 +151,35 @@ async function ingestCapture(args: {
       mimeType: file.mimetype,
       mockScenario: args.mockScenario,
     });
-    db.scans.push(scan);
-    order.latestCaptureId = captureId;
-    order.latestScanId = scan.id;
-    evidenceChanged(order);
-    return { capture, scan, order: detail(order) };
   } catch (err) {
     order.status = "needs_info";
     save();
     throw new HttpError(502, "upstream_error", (err as Error).message);
   }
+  db.scans.push(scan);
+  unlessPaymentIssuedMeanwhile(order, prevStatus);
+  order.latestCaptureId = captureId;
+  order.latestScanId = scan.id;
+  evidenceChanged(order);
+  return { capture, scan, order: detail(order) };
+}
+
+/** A payment transaction may have been issued while the AI was analyzing; then keep the old evidence. */
+function unlessPaymentIssuedMeanwhile(order: Order, prevStatus: Order["status"]) {
+  if (!hasIssuedAttempt(order.id, db.paymentAttempts)) return;
+  order.status = prevStatus;
+  save();
+  throw new HttpError(409, "conflict", LOCKED);
 }
 
 // ---------- routes: health ----------
 
 app.get("/api/health", (_req, res) => {
   res.json({ ok: true, ai: geminiEnabled() ? "gemini" : "mock", time: now() });
+});
+
+app.get("/api/config", (_req, res) => {
+  res.json(publicConfig());
 });
 
 // ---------- routes: orders ----------
@@ -173,6 +206,8 @@ app.post(
     if (!allowed.includes(file.mimetype as (typeof allowed)[number]))
       throw new HttpError(400, "bad_request", "Only PDF, PNG or JPEG");
 
+    await assertEvidenceUnlocked(order, solana);
+    const prevStatus = order.status;
     order.status = "analyzing";
     save();
     let doc: ExtractedDocument;
@@ -192,6 +227,7 @@ app.post(
       throw new HttpError(502, "upstream_error", (err as Error).message);
     }
     db.documents.push(doc);
+    unlessPaymentIssuedMeanwhile(order, prevStatus);
     order.documentIds.push(doc.id);
     evidenceChanged(order);
     res.status(201).json(detail(order));
@@ -285,6 +321,10 @@ app.post(
     if (order.status !== "ready_for_review" || order.comparison?.outcome !== "match")
       throw new HttpError(409, "conflict", "Only matched orders can be approved in Phase 1.");
     if (!supplier.verified) throw new HttpError(409, "conflict", "Supplier wallet is not verified.");
+    if (!isWallet(supplier.walletAddress))
+      throw new HttpError(409, "conflict", "Supplier wallet is not a valid Solana address (see shared/fixtures/supplier.json).");
+    if (!isValidAmount(order.comparison.billedTotalMinor))
+      throw new HttpError(409, "conflict", "Approved amount must be a positive whole number of cents.");
 
     order.approval = {
       id: id("apr"),
@@ -310,14 +350,21 @@ app.post(
       throw new HttpError(409, "stale_approval", "No valid approval for the current evidence.");
     // Idempotent: repeated clicks return the same payment.
     if (order.payment && order.payment.approvalId === approval.id) return res.json(detail(order));
+    const mint = configuredMint();
+    if (!mint) throw new HttpError(409, "conflict", "DEMO_TOKEN_MINT is not set on the server.");
 
+    const paymentId = id("pay");
     order.payment = {
-      id: id("pay"),
+      id: paymentId,
       orderId: order.id,
       approvalId: approval.id,
       network: "devnet",
       recipient: approval.recipient,
       amountMinor: approval.amountMinor,
+      mint,
+      payer: null,
+      lastValidBlockHeight: null,
+      memo: `ClearDock ${order.reference} ${paymentId}`,
       idempotencyKey: `${order.id}:${approval.id}`,
       status: "awaiting_signature",
       signature: null,
@@ -330,13 +377,21 @@ app.post(
   }),
 );
 
+// Unsigned transfer for the buyer's wallet to sign. The server never signs.
+app.post(
+  "/api/orders/:id/payments/transaction",
+  wrap(async (req, res) => {
+    res.json(await issueTransaction(getOrder(req.params.id), req.body?.payer, solana));
+  }),
+);
+
+// Verifies the landed transaction on devnet. Same signature again = re-check.
 app.post(
   "/api/orders/:id/payments/confirm",
-  wrap(() => {
-    // TODO(backend/solana): accept { signature }, fetch the tx from SOLANA_RPC_URL,
-    // check mint, amount and recipient match order.payment, then set
-    // status "submitted" -> "confirmed". Until then we refuse rather than fake it.
-    throw new HttpError(501, "not_implemented", "Devnet confirmation not built yet (see solana/README.md).");
+  wrap(async (req, res) => {
+    const order = getOrder(req.params.id);
+    await confirmPayment(order, req.body?.signature, solana);
+    res.json(detail(order));
   }),
 );
 
