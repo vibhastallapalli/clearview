@@ -19,7 +19,12 @@ import {
 declare const pg: any;
 
 const inPlayground = typeof pg !== "undefined";
-if (!inPlayground) anchor.setProvider(anchor.AnchorProvider.env());
+if (!inPlayground) {
+  // "confirmed", not the default "processed": public devnet RPC nodes lag, and a processed blockhash can fail preflight.
+  const env = anchor.AnchorProvider.env();
+  const opts = { commitment: "confirmed", preflightCommitment: "confirmed" } as const;
+  anchor.setProvider(new anchor.AnchorProvider(new anchor.web3.Connection(env.connection.rpcEndpoint, "confirmed"), env.wallet, opts));
+}
 
 const program: anchor.Program = inPlayground ? pg.program : anchor.workspace.Escrow;
 const provider = program.provider as anchor.AnchorProvider;
