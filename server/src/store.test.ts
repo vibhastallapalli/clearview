@@ -25,3 +25,13 @@ test("reset reuses PO-1001 until a payment transaction was issued, then archives
   assert.equal(resetDb().id, "ord_1001_r2"); // nothing issued on r2 yet: same identity is fine
   assert.equal(db.archivedOrders.length, 1);
 });
+
+test("an order with an escrow is archived too: its PDA is keyed by the reference, so the identity is single-use", () => {
+  const before = db.archivedOrders.length;
+  const current = db.orders[0];
+  current.escrow = { escrowAddress: "x", status: "funded" } as NonNullable<typeof current.escrow>;
+  const next = resetDb();
+  assert.notEqual(next.reference, current.reference);
+  assert.equal(db.archivedOrders.length, before + 1);
+  assert.equal(db.archivedOrders.at(-1)!.escrow?.status, "funded");
+});

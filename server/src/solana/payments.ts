@@ -132,6 +132,7 @@ function currentPayment(order: Order) {
     throw new HttpError(409, "stale_approval", "No valid approval for the current evidence.");
   if (!payment || payment.approvalId !== approval.id)
     throw new HttpError(409, "conflict", "Prepare the payment first (POST /payments).");
+  if (order.escrow) throw new HttpError(409, "conflict", "This order is funded through escrow; pay by releasing the escrow, not directly.");
   return payment;
 }
 
@@ -243,6 +244,8 @@ export function issueTransaction(order: Order, payer: unknown, ctx: PaymentCtx):
   return withOrderLock(order.id, async () => {
     const payment = currentPayment(order);
     if (!isWallet(payer)) throw new HttpError(400, "bad_request", "payer must be the buyer's wallet address.");
+    const buyer = process.env.DEMO_BUYER_WALLET?.trim();
+    if (buyer && payer !== buyer) throw new HttpError(409, "conflict", "Connect the café's buyer wallet (DEMO_BUYER_WALLET) to pay.");
     if (payment.status === "confirmed") throw new HttpError(409, "conflict", "Payment already confirmed.");
     if (payment.status === "submitted" || payment.status === "unknown")
       throw new HttpError(409, "conflict", "A signed transaction was already submitted. Re-check it with POST /payments/confirm.");

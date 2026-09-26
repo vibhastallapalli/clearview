@@ -1,23 +1,7 @@
 import { createHash } from "node:crypto";
 import { Router, type NextFunction, type Request, type Response } from "express";
-import type { ApiError, Order, OrderDetail } from "@cleardock/shared";
+import type { ApiError, EscrowRecord, Order, OrderDetail } from "@cleardock/shared";
 import { db, save } from "./store.ts";
-
-// Mirrors Contracts v2 `EscrowRecord`; switch to the @cleardock/shared import once it merges.
-export interface EscrowRecord {
-  programId: string;
-  escrowAddress: string;
-  buyer: string;
-  supplier: string;
-  mint: string;
-  totalMinor: number;
-  releasedMinor: number;
-  claimedMinor: number;
-  refundedMinor: number;
-  status: "funded" | "claimed" | "settlement_proposed" | "settled" | "released";
-  events: { action: string; signature: string; at: string }[];
-}
-type OrderWithEscrow = Order & { escrow?: EscrowRecord | null };
 
 export type EscrowAction = "fund" | "accept_all" | "claim" | "settle";
 
@@ -186,9 +170,15 @@ function assertBelongsToOrder(state: DecodedEscrow, order: Order, verifiedWallet
   if (state.supplier !== verifiedWallet) {
     throw new EscrowRouteError(409, "conflict", "Escrow pays a wallet that is not the verified supplier wallet");
   }
-  const mint = process.env.DEMO_TOKEN_MINT;
-  if (mint && state.mint !== mint) {
+  // Fail closed: without a configured mint or buyer, any token or funder would pass.
+  const mint = process.env.DEMO_TOKEN_MINT?.trim();
+  if (!mint || state.mint !== mint) {
     throw new EscrowRouteError(409, "conflict", "Escrow holds a token other than the demo test token");
+  }
+  // Seeds are (buyer, order hash), so anyone can fund *an* escrow for this order; only the buyer's may be linked.
+  const buyer = process.env.DEMO_BUYER_WALLET?.trim();
+  if (!buyer || state.buyer !== buyer) {
+    throw new EscrowRouteError(409, "conflict", "Escrow was funded by a wallet other than the demo buyer");
   }
 }
 
@@ -206,7 +196,7 @@ async function recordEscrowEvent(req: Request, res: Response) {
   const programId = process.env.ESCROW_PROGRAM_ID;
   if (!programId) throw new EscrowRouteError(501, "not_implemented", "ESCROW_PROGRAM_ID is not configured");
 
-  const order = db.orders.find((o) => o.id === req.params.id) as OrderWithEscrow | undefined;
+  const order = db.orders.find((o) => o.id === req.params.id) ;
   if (!order) throw new EscrowRouteError(404, "not_found", `Order ${req.params.id} not found`);
   const supplier = db.suppliers.find((s) => s.id === order.supplierId);
   if (!supplier?.verified) throw new EscrowRouteError(409, "conflict", "Supplier wallet is not verified");

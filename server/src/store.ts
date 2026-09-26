@@ -85,14 +85,19 @@ export function save() {
 }
 
 /**
- * Demo reset. An order that ever had a payment transaction issued is archived
+ * Demo reset. An order that ever had a payment transaction issued or an escrow is archived
  * (with its evidence), never reset in place, and the fresh demo order gets a new
  * identity. So a reference that was paid on-chain is never shown as unpaid again.
  * Payment attempts are always kept. The caller must first check no issued
  * transaction can still land.
  */
 export function resetDb(): Order {
-  const touched = new Set(db.paymentAttempts.map((a) => a.orderId));
+  // Payment attempts or an escrow (its PDA is keyed by the reference) make an identity single-use.
+  const touched = new Set([
+    ...db.paymentAttempts.map((a) => a.orderId),
+    ...db.orders.filter((o) => o.escrow).map((o) => o.id),
+    ...db.archivedOrders.map((o) => o.id),
+  ]);
   const archivedOrders = [...db.archivedOrders, ...db.orders.filter((o) => touched.has(o.id))];
   const kept = new Set(archivedOrders.map((o) => o.id));
   const keep = <T extends { orderId: string }>(rows: T[]) => rows.filter((r) => kept.has(r.orderId));

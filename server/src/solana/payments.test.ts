@@ -513,3 +513,24 @@ test("base58 matches the known encoding", () => {
   assert.equal(base58(new Uint8Array([0, 0, 1])), "112");
   assert.equal(base58(new PublicKey("11111111111111111111111111111112").toBytes()), "11111111111111111111111111111112");
 });
+
+// ---------- escrow / buyer guards ----------
+
+test("an order funded through escrow can't also be paid directly", async () => {
+  const { payer, order, ctx, s } = setup();
+  order.escrow = { status: "funded" } as NonNullable<Order["escrow"]>;
+  await rejects(issueTransaction(order, payer, ctx), 409);
+  assert.equal(s.blockhashes, 0);
+});
+
+test("when DEMO_BUYER_WALLET is set, only that wallet gets a payment transaction", async () => {
+  const { payer, order, ctx } = setup();
+  process.env.DEMO_BUYER_WALLET = addr();
+  try {
+    await rejects(issueTransaction(order, payer, ctx), 409);
+    process.env.DEMO_BUYER_WALLET = payer;
+    await issueTransaction(order, payer, ctx);
+  } finally {
+    delete process.env.DEMO_BUYER_WALLET;
+  }
+});
