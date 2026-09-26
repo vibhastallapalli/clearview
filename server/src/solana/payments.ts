@@ -1,7 +1,16 @@
-import { PublicKey, type Connection, type ParsedAccountData } from "@solana/web3.js";
+import { PublicKey, type Connection, type ParsedAccountData, type ParsedTransactionWithMeta } from "@solana/web3.js";
 import { TOKEN_PROGRAM_ID } from "@solana/spl-token";
 import type { ApiError, Order, PaymentTransaction } from "@cleardock/shared";
-import { ata, buildPaymentTx, DECIMALS, isSignature, isWallet, verifyPayment, type VerifyResult } from "./tx.ts";
+import {
+  ata,
+  buildPaymentTx,
+  DECIMALS,
+  isSignature,
+  isWallet,
+  MEMO_PROGRAM_ID,
+  verifyPayment,
+  type VerifyResult,
+} from "./tx.ts";
 
 /**
  * Payment orchestration: issue the unsigned transfer, confirm a signature,
@@ -119,28 +128,64 @@ function applyResult(order: Order, attempt: PaymentAttempt, signature: string, r
   order.updatedAt = now();
 }
 
+const hasMemo = (tx: ParsedTransactionWithMeta, memo: string) =>
+  tx.transaction.message.instructions.some((ix) => ix.programId.equals(MEMO_PROGRAM_ID) && "parsed" in ix && ix.parsed === memo);
+
 /**
- * An attempt past its lastValidBlockHeight can never land. Before calling it
- * expired, look for a transaction that already landed with its blockhash
- * (e.g. the wallet sent it but /confirm never reached us).
+ * Which issued attempt a landed transaction belongs to. The blockhash binds it
+ * to the exact attempt. If a wallet re-blockhashed our transaction, it can
+ * still bind through the per-payment memo, but only for this payment's own
+ * payer, and verifyPayment still checks every transfer detail.
+ */
+function bindAttempt(paymentId: string, memo: string, tx: ParsedTransactionWithMeta, attempts: PaymentAttempt[]) {
+  const blockhash = tx.transaction.message.recentBlockhash;
+  const exact = attempts.find((a) => a.paymentId === paymentId && a.blockhash === blockhash);
+  if (exact) return { attempt: exact, expected: exact };
+  const feePayer = tx.transaction.message.accountKeys[0]?.pubkey.toBase58();
+  const byMemo = attempts.filter((a) => a.paymentId === paymentId && a.payer === feePayer).at(-1);
+  if (!byMemo || !hasMemo(tx, memo)) return null;
+  console.warn(`[payments] ${paymentId}: wallet changed the blockhash; bound by memo. Expiry locks assume the issued blockhash.`);
+  return { attempt: byMemo, expected: { ...byMemo, blockhash } };
+}
+
+const SCAN_PAGE = 50;
+const SCAN_MAX = 500;
+
+/**
+ * An attempt past its lastValidBlockHeight can never land. That proves nothing
+ * if it already landed and the browser never reported the signature. Every CDT
+ * transfer out of the buyer touches the buyer's token account, and ours always
+ * carries the payment memo. So we page through that account's signatures back
+ * past the issue time and fetch any that carry the memo. If we can't page back
+ * far enough, we throw instead of claiming it never landed.
  */
 async function resolveExpired(order: Order, attempt: PaymentAttempt, ctx: PaymentCtx) {
-  const issuedMs = Date.parse(attempt.issuedAt);
+  const since = Date.parse(attempt.issuedAt) / 1000 - 120; // clock-skew margin
+  const address = new PublicKey(ata(attempt.mint, attempt.payer));
+  let before: string | undefined;
   try {
-    const sigs = await ctx.rpc.getSignaturesForAddress(new PublicKey(ata(attempt.mint, attempt.payer)), { limit: 10 }, COMMITMENT);
-    for (const s of sigs) {
-      if (s.blockTime && s.blockTime * 1000 < issuedMs - 60_000) break; // older than the attempt
-      const tx = await ctx.rpc.getParsedTransaction(s.signature, { commitment: COMMITMENT, maxSupportedTransactionVersion: 0 });
-      if (tx?.transaction.message.recentBlockhash !== attempt.blockhash) continue;
-      if (order.payment?.id === attempt.paymentId) applyResult(order, attempt, s.signature, verifyPayment(tx, attempt));
-      else attempt.status = "failed"; // landed against a voided payment; recorded, never auto-confirmed
-      attempt.signature = s.signature;
-      return;
+    for (let scanned = 0; ; ) {
+      const page = await ctx.rpc.getSignaturesForAddress(address, { limit: SCAN_PAGE, before }, COMMITMENT);
+      for (const s of page) {
+        if (s.blockTime != null && s.blockTime < since) return void (attempt.status = "expired");
+        if (!s.memo?.includes(attempt.memo)) continue;
+        const tx = await ctx.rpc.getParsedTransaction(s.signature, { commitment: COMMITMENT, maxSupportedTransactionVersion: 0 });
+        if (!tx) throw new Error(`listed transaction ${s.signature} could not be fetched`);
+        const bound = bindAttempt(attempt.paymentId, attempt.memo, tx, [attempt]);
+        if (!bound) continue;
+        if (order.payment?.id === attempt.paymentId) applyResult(order, attempt, s.signature, verifyPayment(tx, bound.expected));
+        else attempt.status = "failed"; // landed against a voided payment: recorded, never auto-confirmed
+        attempt.signature = s.signature;
+        return;
+      }
+      if (page.length < SCAN_PAGE) return void (attempt.status = "expired"); // reached the account's first transaction
+      scanned += page.length;
+      if (scanned >= SCAN_MAX) throw new Error(`over ${SCAN_MAX} buyer transactions since issue; can't prove the old one never landed`);
+      before = page.at(-1)!.signature;
     }
   } catch (err) {
     throw rpcError(err);
   }
-  attempt.status = "expired";
 }
 
 /** Sweep this order's issued attempts: returns the live ones, expires or settles the rest. */
@@ -277,17 +322,15 @@ export function confirmPayment(order: Order, signature: unknown, ctx: PaymentCtx
       return;
     }
 
-    const attempt = ctx.attempts.find(
-      (a) => a.paymentId === payment.id && a.blockhash === tx.transaction.message.recentBlockhash,
-    );
-    if (!attempt) {
+    const bound = bindAttempt(payment.id, payment.memo, tx, ctx.attempts);
+    if (!bound) {
       Object.assign(payment, { status: before.status, signature: before.signature, error: before.error });
       order.status = before.orderStatus;
       ctx.save();
       throw new HttpError(409, "conflict", "That transaction was not issued by ClearDock for this payment.");
     }
-    const result = verifyPayment(tx, attempt);
-    applyResult(order, attempt, signature, result);
+    const result = verifyPayment(tx, bound.expected);
+    applyResult(order, bound.attempt, signature, result);
     ctx.save();
     if (result.kind === "mismatch") throw new HttpError(409, "conflict", `Transaction does not match the approved payment: ${result.reason}`);
   });

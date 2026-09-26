@@ -37,6 +37,9 @@ mkdirSync(UPLOAD_DIR, { recursive: true });
 
 function seed(): Db {
   const supplier = JSON.parse(readFileSync(join(FIXTURES, "supplier.json"), "utf8")) as Supplier;
+  // The demo supplier's devnet wallet comes from .env (same value setup-devnet uses), never from AI output.
+  const envWallet = process.env.DEMO_SUPPLIER_WALLET?.trim();
+  if (envWallet) supplier.walletAddress = envWallet;
   const now = new Date().toISOString();
   return {
     suppliers: [supplier],
@@ -76,8 +79,9 @@ export function save() {
   writeFileSync(DB_FILE, JSON.stringify(db, null, 2));
 }
 
+/** Reseeds demo data. Payment attempts are kept: an issued transaction can still land after a reset. */
 export function resetDb() {
-  Object.assign(db, seed());
+  Object.assign(db, seed(), { paymentAttempts: db.paymentAttempts });
   save();
 }
 

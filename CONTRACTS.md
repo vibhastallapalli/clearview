@@ -77,6 +77,12 @@ Base `/api`. Errors are `{ error, code }` with `code` one of `not_found`, `bad_r
 
 **Evidence changes after a transaction is issued.** A signed transfer can't be recalled. Document and capture uploads return 409 while an issued transaction could still land (until its `lastValidBlockHeight` passes, about 60–90 s, and the server has checked it didn't land), and always once the payment is `submitted`, `unknown` or `confirmed`. A confirmed payment stays confirmed; later problems go to Phase 2 claims.
 
+**Recovering an unreported transaction.** Before an expired attempt is released, the server pages through the buyer CDT account's signatures back to the issue time and fetches any that carry the payment memo. If it can't reach the issue time (RPC down, more than 500 buyer transactions), the attempt stays open. Attempts live in `server/data/db.json`, so they survive restarts and `POST /dev/reset`. Deleting that file removes the protection.
+
+**Approval gates.** Only `outcome: "match"` with no `flags`, a verified supplier, and a supplier wallet equal to `DEMO_SUPPLIER_WALLET` when that is set.
+
+**Config.** `DEMO_TOKEN_MINT` is the only mint setting; the browser gets it from `GET /config`. `DEMO_SUPPLIER_WALLET` seeds the supplier's wallet.
+
 ## Phase 2 (types exist, nothing built)
 
 `EscrowRecord`, `Claim`, `ClaimLine`, `SettlementOffer`, `SettlementKind`. Rules: [docs/escrow-rulebook.md](docs/escrow-rulebook.md). Key invariant: `toSupplierMinor + toBuyerMinor` equals the locked amount, both signatures required.

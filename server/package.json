@@ -7,7 +7,8 @@
     "dev": "tsx watch --env-file-if-exists=../.env src/index.ts",
     "start": "tsx --env-file-if-exists=../.env src/index.ts",
     "typecheck": "tsc --noEmit",
-    "test": "tsx --test src/**/*.test.ts"
+    "test": "tsx --test src/**/*.test.ts",
+    "setup:devnet": "tsx --env-file-if-exists=../.env scripts/setup-devnet.ts"
   },
   "dependencies": {
     "@cleardock/shared": "*",
