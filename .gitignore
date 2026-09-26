@@ -9,3 +9,4 @@ server/data/
 .idea/
 __pycache__/
 *.pyc
+solana/.keys/

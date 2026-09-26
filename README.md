@@ -11,6 +11,7 @@ Read these first, in order:
 3. **[TASKS.md](TASKS.md)**: who owns what, in build order
 4. [docs/escrow-rulebook.md](docs/escrow-rulebook.md): Phase 2 dispute rules (decided; don't reopen)
 5. [ROADMAP.md](ROADMAP.md): everything parked for later (use this for the pitch)
+6. **[CLAUDE.md](CLAUDE.md)** / AGENTS.md: rules for coding agents; **[prompts/](prompts/)**: one prompt per agent
 
 ## Quick start
 
