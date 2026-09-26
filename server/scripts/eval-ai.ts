@@ -50,6 +50,8 @@ interface ExpectedPhoto {
   observed: Record<string, number>;
   unreadable: number;
   outcome: Comparison["outcome"];
+  /** Drawn test image, not a real photo. Labelled as such in the report. */
+  synthetic?: boolean;
 }
 
 const expected = JSON.parse(readFileSync(join(SAMPLES, "expected.json"), "utf8")) as {
@@ -181,8 +183,9 @@ async function main() {
   const cleanInvoice = clean;
   for (const e of expected.photos) {
     const path = join(SAMPLES, e.file);
+    const label = e.synthetic ? `${e.file} (synthetic)` : e.file;
     if (!existsSync(path)) {
-      record(e.file, "scan", null, "photo not taken yet");
+      record(label, "scan", null, "photo not taken yet");
       continue;
     }
     const image = readFileSync(path);
@@ -197,18 +200,18 @@ async function main() {
         mimeType: MIME[extname(path).toLowerCase()] ?? "image/jpeg",
       });
     } catch (err) {
-      record(e.file, "scan ran", false, (err as Error).message);
+      record(label, "scan ran", false, (err as Error).message);
       continue;
     }
     const secs = ((Date.now() - started) / 1000).toFixed(1);
-    record(e.file, "live Gemini result", scan.analyzedBy === "gemini", `${scan.analyzedBy}, ${secs} s`);
+    record(label, "live Gemini result", scan.analyzedBy === "gemini", `${scan.analyzedBy}, ${secs} s`);
     const counts: Record<string, number> = {};
     for (const o of scan.observed) counts[o.sku ?? `?${o.labelText}`] = (counts[o.sku ?? `?${o.labelText}`] ?? 0) + o.count;
-    record(e.file, "counts", JSON.stringify(sortKeys(counts)) === JSON.stringify(sortKeys(e.observed)), `got ${JSON.stringify(counts)}`);
-    record(e.file, "unreadable", scan.unreadable.length === e.unreadable, `got ${JSON.stringify(scan.unreadable)}`);
+    record(label, "counts", JSON.stringify(sortKeys(counts)) === JSON.stringify(sortKeys(e.observed)), `got ${JSON.stringify(counts)}`);
+    record(label, "unreadable", scan.unreadable.length === e.unreadable, `got ${JSON.stringify(scan.unreadable)}`);
     if (po && cleanInvoice) {
       const c = compare(cleanInvoice, scan);
-      record(e.file, `comparison ${e.outcome}`, c.outcome === e.outcome, `got ${c.outcome}: ${c.summary}`);
+      record(label, `comparison ${e.outcome}`, c.outcome === e.outcome, `got ${c.outcome}: ${c.summary}`);
     }
     await pause(4000);
   }
