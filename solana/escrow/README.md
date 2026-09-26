@@ -3,7 +3,7 @@
 Anchor program for Phase 2 of ClearDock. Rules: [`docs/escrow-rulebook.md`](../../docs/escrow-rulebook.md).
 Progress and go/no-go: [`docs/escrow-status.md`](../../docs/escrow-status.md).
 
-**Program ID (devnet):** `2tVuzMGuXEX6ZcvBdDroKr163z3Y8B7fJubwGuqUBv4J`
+**Program ID (devnet):** `Bk4DD3mGCJRFATHTnLqyoxiWDm65nfMcPfE7oduiQzAt`
 
 Devnet only, CDT test token only. Never call it USDC.
 
@@ -68,4 +68,4 @@ anchor test          # local validator
 
 `server/src/escrow.ts` exposes `POST /api/orders/:id/escrow/events { action, signature, escrowAddress? }`. It confirms the transaction ran this program on this escrow, then reads the escrow account itself (never client-reported amounts). It also checks that the escrow's order hash matches the order reference and that it pays the verified supplier wallet. `web/src/escrow/EscrowPanel.tsx` shows that state.
 
-The Playground wallet `2MDRPMZVyVjhF1Kc81BrruHqbyc1PFS2EwZGXwxPbSmH` is the program's upgrade authority, and it lives in that browser's local storage. Don't clear site data for beta.solpg.io in that browser.
+Devnet deploy wallet: `BdqrAai14xaJC6AWxNtVaWDfVVCBxs42c4EuYbKrM89G` (upgrade authority). Its keypair and the program keypair live outside the repo in `~/.cleardock/` on the deploying laptop. Build, deploy and devnet test steps: [`docs/escrow-status.md`](../../docs/escrow-status.md).
