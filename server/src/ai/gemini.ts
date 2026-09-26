@@ -89,7 +89,8 @@ async function callOnce(args: {
   const candidate = json?.candidates?.[0];
   const text = candidate?.content?.parts?.map((p: any) => p?.text ?? "").join("");
   if (!text) throw new GeminiError(`Gemini returned no content (finishReason ${candidate?.finishReason ?? "unknown"})`);
-  if (candidate?.finishReason === "MAX_TOKENS") throw new GeminiError("Gemini output was cut off (MAX_TOKENS)");
+  if (candidate?.finishReason !== "STOP")
+    throw new GeminiError(`Gemini response incomplete (finishReason ${candidate?.finishReason ?? "unknown"})`);
   try {
     return JSON.parse(text);
   } catch {

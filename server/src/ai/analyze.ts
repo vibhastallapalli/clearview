@@ -84,7 +84,7 @@ export async function analyzeDocument(args: {
     id: args.docId,
     orderId: args.orderId,
     kind: args.kind,
-    source: { filename: args.filename, mimeType: args.mimeType, sha256: args.sha256 },
+    source: { filename: args.filename, mimeType: args.mimeType, sha256: createHash("sha256").update(args.data).digest("hex") },
     extractedAt: now,
   };
 
@@ -102,7 +102,7 @@ export async function analyzeDocument(args: {
   const prompt = DOCUMENT_PROMPT(args.kind);
   const { raw, cachedAt } = await callWithCache(
     { prompt, file: { mimeType: args.mimeType, data: args.data }, schema: DOCUMENT_SCHEMA },
-    args.sha256,
+    validateDocument,
   );
   const doc = validateDocument(raw);
   if (cachedAt) {
@@ -140,10 +140,9 @@ export async function analyzeScan(args: {
     return { ...f, ...base, analyzedBy: "mock", notes: `MOCK (${args.mockScenario ?? "match"}): ${f.notes}` };
   }
 
-  const sha = createHash("sha256").update(args.image).digest("hex");
   const { raw, cachedAt } = await callWithCache(
     { prompt: SCAN_PROMPT, file: { mimeType: args.mimeType, data: args.image }, schema: SCAN_SCHEMA },
-    sha,
+    validateScan,
   );
   const scan = validateScan(raw);
   if (cachedAt) return { ...scan, ...base, analyzedBy: "cache", notes: `${cacheWarning(cachedAt)} ${scan.notes}` };
@@ -159,15 +158,17 @@ const cacheWarning = (at: string) =>
 
 async function callWithCache(
   req: { prompt: string; file: { mimeType: string; data: Buffer }; schema: object },
-  fileSha: string,
+  validate: (raw: any) => unknown,
 ): Promise<{ raw: unknown; cachedAt: string | null }> {
   // Key on the file, the prompt, the schema and the model, so a prompt change never serves a stale answer.
+  const fileSha = createHash("sha256").update(req.file.data).digest("hex");
   const key = createHash("sha256")
-    .update(`${fileSha}\n${geminiModel()}\n${req.prompt}\n${JSON.stringify(req.schema)}`)
+    .update(`validated-v2\n${fileSha}\n${req.file.mimeType}\n${geminiModel()}\n${req.prompt}\n${JSON.stringify(req.schema)}`)
     .digest("hex");
   const path = join(CACHE_DIR, `${key}.json`);
   try {
     const raw = await geminiJson(req);
+    validate(raw); // Never replace a good cache entry with rejected model output.
     try {
       mkdirSync(CACHE_DIR, { recursive: true });
       writeFileSync(path, JSON.stringify({ at: new Date().toISOString(), raw }));
@@ -177,10 +178,12 @@ async function callWithCache(
     return { raw, cachedAt: null };
   } catch (err) {
     // Fall back only when Gemini itself failed (timeout, quota, outage), never when its output was rejected.
-    if (!(err instanceof GeminiError)) throw err;
+    if (!(err instanceof GeminiError) || !err.retryable) throw err;
     let hit: { at: string; raw: unknown } | null = null;
     try {
       hit = JSON.parse(readFileSync(path, "utf8"));
+      if (!hit || typeof hit.at !== "string" || !Number.isFinite(Date.parse(hit.at))) throw err;
+      validate(hit.raw);
     } catch {
       throw err;
     }
@@ -266,7 +269,9 @@ function validateLine(v: any, warnings: string[]): ExtractedLine {
   const missing: string[] = [];
   if (!isNum(v.quantity) || v.quantity < 0) missing.push("quantity");
   if (!UNITS.includes(v.unit)) missing.push("unit");
-  if (!Number.isInteger(v.unitPriceMinor) || v.unitPriceMinor < 0) missing.push("unit price");
+  if (!Number.isSafeInteger(v.unitPriceMinor) || v.unitPriceMinor < 0) missing.push("unit price");
+  if (["bag", "box", "unit"].includes(v.unit) && !Number.isSafeInteger(v.quantity)) missing.push("whole package quantity");
+  if (!isNum(v.confidence) || v.confidence < 0.8 || v.confidence > 1) missing.push("confident evidence");
   if (missing.length > 0) {
     warnings.push(`Could not read ${missing.join(", ")} for "${sourceText || description}". Needs manual review.`);
     return {
@@ -292,7 +297,11 @@ function validateLine(v: any, warnings: string[]): ExtractedLine {
 }
 
 function validateDocument(v: any) {
-  if (!v || !Array.isArray(v.lines)) fail("missing lines");
+  if (!v || !Array.isArray(v.lines) || v.lines.length === 0) fail("missing lines");
+  if (!Array.isArray(v.warnings) || v.warnings.some((s: unknown) => typeof s !== "string")) fail("invalid warnings");
+  if (!Array.isArray(v.embeddedInstructions) || v.embeddedInstructions.some((s: unknown) => typeof s !== "string"))
+    fail("missing or invalid embedded instructions");
+  if (v.paymentAddress !== null && typeof v.paymentAddress !== "string") fail("invalid payment address");
   const warnings: string[] = Array.isArray(v.warnings) ? v.warnings.map(String) : [];
   const lines = v.lines.map((l: any) => validateLine(l, warnings));
   const address = typeof v.paymentAddress === "string" ? v.paymentAddress.trim() : "";
@@ -302,7 +311,7 @@ function validateDocument(v: any) {
     currency: v.currency === "USD" ? ("USD" as const) : null,
     language: ["en", "es", "other"].includes(v.language) ? v.language : null,
     lines,
-    totalMinor: Number.isInteger(v.totalMinor) ? v.totalMinor : null,
+    totalMinor: Number.isSafeInteger(v.totalMinor) && v.totalMinor >= 0 ? v.totalMinor : null,
     paymentAddress: address || null,
     embeddedInstructions: Array.isArray(v.embeddedInstructions)
       ? v.embeddedInstructions.map(String).filter((s: string) => s.trim())
@@ -313,10 +322,19 @@ function validateDocument(v: any) {
 
 function validateScan(v: any) {
   if (!v || !Array.isArray(v.observed)) fail("missing observed");
+  if (!Array.isArray(v.unreadable) || v.unreadable.some((s: unknown) => typeof s !== "string"))
+    fail("missing or invalid unreadable evidence");
+  if (typeof v.notes !== "string") fail("invalid scan notes");
+  const unreadable: string[] = [...v.unreadable];
   const observed: ObservedItem[] = v.observed.map((o: any) => {
-    if (!Number.isInteger(o?.count) || o.count < 0) fail("bad count");
+    if (!Number.isSafeInteger(o?.count) || o.count <= 0) fail("bad count");
+    if (typeof o.labelText !== "string" || !o.labelText.trim()) fail("missing label text");
+    if (!isNum(o.confidence) || o.confidence < 0 || o.confidence > 1) fail("bad confidence");
+    // Confidence is a review gate, not a calibrated probability. Keep uncertainty
+    // visible using the existing contract; comparison already blocks unreadables.
+    if (o.confidence < 0.8) unreadable.push(`Uncertain label/count: ${o.labelText}. Recapture or review manually.`);
     return {
-      sku: typeof o.sku === "string" && SKUS.has(o.sku) ? o.sku : null,
+      sku: o.confidence >= 0.8 && typeof o.sku === "string" && SKUS.has(o.sku) ? o.sku : null,
       labelText: String(o.labelText ?? ""),
       count: o.count,
       confidence: clamp01(o.confidence),
@@ -324,7 +342,7 @@ function validateScan(v: any) {
   });
   return {
     observed,
-    unreadable: Array.isArray(v.unreadable) ? v.unreadable.map(String) : [],
+    unreadable,
     notes: String(v.notes ?? ""),
   };
 }
