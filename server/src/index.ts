@@ -100,7 +100,7 @@ function evidenceChanged(order: Order) {
   });
 
   if (!latest("purchase_order") || !latest("invoice")) order.status = "needs_documents";
-  else if (order.comparison.outcome === "match") order.status = "ready_for_review";
+  else if (order.comparison.outcome === "match" && !order.comparison.flags?.length) order.status = "ready_for_review";
   else if (order.comparison.outcome === "discrepancy") order.status = "discrepancy";
   else order.status = "needs_info";
 
@@ -320,7 +320,12 @@ app.post(
       throw new HttpError(409, "stale_approval", "Evidence changed since you reviewed it. Review again.");
     if (order.status !== "ready_for_review" || order.comparison?.outcome !== "match")
       throw new HttpError(409, "conflict", "Only matched orders can be approved in Phase 1.");
+    if (order.comparison.flags?.length)
+      throw new HttpError(409, "conflict", `Blocking flags must be resolved first: ${order.comparison.flags.join("; ")}`);
     if (!supplier.verified) throw new HttpError(409, "conflict", "Supplier wallet is not verified.");
+    const envWallet = process.env.DEMO_SUPPLIER_WALLET?.trim();
+    if (envWallet && envWallet !== supplier.walletAddress)
+      throw new HttpError(409, "conflict", "Supplier wallet differs from DEMO_SUPPLIER_WALLET. Reset demo data (POST /api/dev/reset) after changing it.");
     if (!isWallet(supplier.walletAddress))
       throw new HttpError(409, "conflict", "Supplier wallet is not a valid Solana address (see shared/fixtures/supplier.json).");
     if (!isValidAmount(order.comparison.billedTotalMinor))
