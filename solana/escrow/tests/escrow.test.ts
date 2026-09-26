@@ -63,7 +63,8 @@ async function expectFailure(action: Promise<unknown>, code: string) {
     const detail = [e.error?.errorCode?.code, e.message, ...(e.logs ?? []), ...(e.transactionLogs ?? [])]
       .filter(Boolean)
       .join("\n");
-    if (detail.includes(code)) return;
+    const reason = detail.split("\n").find((line) => line.includes(code));
+    if (reason) return console.log(`      rejected as expected: ${reason.trim()}`);
     throw new Error(`expected ${code}, got:\n${detail || String(err)}`);
   }
   throw new Error(`expected ${code}, but the transaction succeeded`);
@@ -89,6 +90,25 @@ describe("ClearDock escrow", function () {
     (await accounts.escrow.fetch(escrow, "confirmed")) as unknown as EscrowState;
 
   const statusOf = (state: EscrowState) => Object.keys(state.status)[0];
+
+  // Signatures are the evidence recorded in docs/escrow-status.md.
+  const log = (what: string, signature: string) => console.log(`      tx ${what}: ${signature}`);
+
+  // Everything a rejected transaction must leave untouched: every token balance and the escrow account.
+  const snapshot = async (escrow: PublicKey, vault: PublicKey) =>
+    JSON.stringify({
+      vault: await balance(vault),
+      buyer: await balance(buyerAta),
+      supplier: await balance(supplierAta),
+      stranger: await balance(strangerAta),
+      escrow: await fetchEscrow(escrow),
+    });
+
+  async function expectRejected(escrow: PublicKey, vault: PublicKey, action: () => Promise<unknown>, code: string) {
+    const before = await snapshot(escrow, vault);
+    await expectFailure(action(), code);
+    assertEqual(await snapshot(escrow, vault), before, "balances and escrow state after rejection");
+  }
 
   const releaseAccounts = (escrow: PublicKey, vault: PublicKey, signer = buyer.publicKey, destination = supplierAta) => ({
     escrow,
@@ -119,7 +139,7 @@ describe("ClearDock escrow", function () {
     );
     const [vault] = PublicKey.findProgramAddressSync([Buffer.from("vault"), escrow.toBuffer()], program.programId);
 
-    await program.methods
+    const signature = await program.methods
       .fund([...orderIdHash], new BN(TOTAL), [...termsHash])
       .accountsStrict({
         buyer: buyer.publicKey,
@@ -133,18 +153,29 @@ describe("ClearDock escrow", function () {
       })
       .signers([buyer])
       .rpc(confirmed);
+    log(`fund ${label}`, signature);
+
+    const state = (await fetchEscrow(escrow)) as EscrowState & Record<string, unknown>;
+    assertEqual(statusOf(state), "funded", "status after fund");
+    assertEqual(state.totalAmount.toNumber(), TOTAL, "total_amount");
+    assertEqual(String(state.buyer), buyer.publicKey.toBase58(), "stored buyer");
+    assertEqual(String(state.supplier), supplier.publicKey.toBase58(), "stored supplier");
+    assertEqual(await balance(vault), TOTAL, "vault after fund");
     return { escrow, vault };
   }
 
   const acceptAll = (escrow: PublicKey, vault: PublicKey) =>
     program.methods.acceptAll().accountsStrict(releaseAccounts(escrow, vault)).signers([buyer]);
 
-  const claim = (escrow: PublicKey, vault: PublicKey) =>
-    program.methods
-      .claim(new BN(ACCEPTED), new BN(CLAIMED))
-      .accountsStrict(releaseAccounts(escrow, vault))
-      .signers([buyer])
-      .rpc(confirmed);
+  const claim = async (escrow: PublicKey, vault: PublicKey) =>
+    log(
+      "claim",
+      await program.methods
+        .claim(new BN(ACCEPTED), new BN(CLAIMED))
+        .accountsStrict(releaseAccounts(escrow, vault))
+        .signers([buyer])
+        .rpc(confirmed),
+    );
 
   before(async () => {
     // Fund the buyer from the provider wallet: devnet airdrops are rate-limited.
@@ -168,16 +199,18 @@ describe("ClearDock escrow", function () {
 
   it("happy path: fund, then accept_all pays the supplier in full", async () => {
     const supplierBefore = await balance(supplierAta);
+    const buyerBefore = await balance(buyerAta);
     const { escrow, vault } = await fundEscrow("happy");
-    assertEqual(await balance(vault), TOTAL, "vault after fund");
+    assertEqual(buyerBefore - (await balance(buyerAta)), TOTAL, "buyer paid into escrow");
 
-    await acceptAll(escrow, vault).rpc(confirmed);
+    log("accept_all", await acceptAll(escrow, vault).rpc(confirmed));
 
     assertEqual((await balance(supplierAta)) - supplierBefore, TOTAL, "supplier received");
     assertEqual(await balance(vault), 0, "vault after release");
     const state = await fetchEscrow(escrow);
     assertEqual(statusOf(state), "released", "status");
     assertEqual(state.releasedAmount.toNumber(), TOTAL, "released_amount");
+    assertEqual(state.refundedAmount.toNumber(), 0, "refunded_amount");
   });
 
   it("demo split: $30 order, $10 claimed, $20 paid now, settlement refunds the $10", async () => {
@@ -188,13 +221,19 @@ describe("ClearDock escrow", function () {
     await claim(escrow, vault);
     assertEqual((await balance(supplierAta)) - supplierBefore, ACCEPTED, "supplier paid for accepted lines");
     assertEqual(await balance(vault), CLAIMED, "claimed amount still held");
-    assertEqual(statusOf(await fetchEscrow(escrow)), "claimed", "status after claim");
+    const claimed = await fetchEscrow(escrow);
+    assertEqual(statusOf(claimed), "claimed", "status after claim");
+    assertEqual(claimed.releasedAmount.toNumber(), ACCEPTED, "released_amount after claim");
+    assertEqual(claimed.claimedAmount.toNumber(), CLAIMED, "claimed_amount after claim");
 
-    await program.methods
-      .settle(new BN(0), new BN(CLAIMED))
-      .accountsStrict(settleAccounts(escrow, vault))
-      .signers([buyer, supplier])
-      .rpc(confirmed);
+    log(
+      "settle",
+      await program.methods
+        .settle(new BN(0), new BN(CLAIMED))
+        .accountsStrict(settleAccounts(escrow, vault))
+        .signers([buyer, supplier])
+        .rpc(confirmed),
+    );
 
     assertEqual(await balance(vault), 0, "vault after settlement");
     assertEqual((await balance(supplierAta)) - supplierBefore, ACCEPTED, "supplier total");
@@ -208,39 +247,46 @@ describe("ClearDock escrow", function () {
 
   it("must fail: someone other than the buyer cannot release funds", async () => {
     const { escrow, vault } = await fundEscrow("wrong-signer");
-    await expectFailure(
-      program.methods
-        .acceptAll()
-        .accountsStrict(releaseAccounts(escrow, vault, stranger.publicKey))
-        .signers([stranger])
-        .rpc(confirmed),
+    await expectRejected(
+      escrow,
+      vault,
+      () =>
+        program.methods
+          .acceptAll()
+          .accountsStrict(releaseAccounts(escrow, vault, stranger.publicKey))
+          .signers([stranger])
+          .rpc(confirmed),
       "Unauthorized",
     );
-    assertEqual(await balance(vault), TOTAL, "vault untouched");
   });
 
   it("must fail: payout to an account the supplier doesn't own", async () => {
     const { escrow, vault } = await fundEscrow("changed-destination");
-    await expectFailure(
-      program.methods
-        .acceptAll()
-        .accountsStrict(releaseAccounts(escrow, vault, buyer.publicKey, strangerAta))
-        .signers([buyer])
-        .rpc(confirmed),
+    await expectRejected(
+      escrow,
+      vault,
+      () =>
+        program.methods
+          .acceptAll()
+          .accountsStrict(releaseAccounts(escrow, vault, buyer.publicKey, strangerAta))
+          .signers([buyer])
+          .rpc(confirmed),
       "WrongDestination",
     );
-    assertEqual(await balance(vault), TOTAL, "vault untouched");
   });
 
   it("must fail: a second payout from the same escrow", async () => {
     const supplierBefore = await balance(supplierAta);
     const { escrow, vault } = await fundEscrow("double-payout");
-    await acceptAll(escrow, vault).rpc(confirmed);
-    await expectFailure(
-      acceptAll(escrow, vault)
-        // A distinct transaction, so the RPC can't dedupe it against the first release.
-        .preInstructions([ComputeBudgetProgram.setComputeUnitLimit({ units: 300_000 })])
-        .rpc(confirmed),
+    log("accept_all (first)", await acceptAll(escrow, vault).rpc(confirmed));
+    await expectRejected(
+      escrow,
+      vault,
+      () =>
+        acceptAll(escrow, vault)
+          // A distinct transaction, so the RPC can't dedupe it against the first release.
+          .preInstructions([ComputeBudgetProgram.setComputeUnitLimit({ units: 300_000 })])
+          .rpc(confirmed),
       "InvalidStatus",
     );
     assertEqual((await balance(supplierAta)) - supplierBefore, TOTAL, "supplier paid exactly once");
@@ -249,15 +295,14 @@ describe("ClearDock escrow", function () {
   it("must fail: a settlement that doesn't add up to the held amount", async () => {
     const { escrow, vault } = await fundEscrow("bad-sum");
     await claim(escrow, vault);
-    await expectFailure(
+    const settle = (toSupplier: number, toBuyer: number) => () =>
       program.methods
-        .settle(new BN(0), new BN(CLAIMED - 100))
+        .settle(new BN(toSupplier), new BN(toBuyer))
         .accountsStrict(settleAccounts(escrow, vault))
         .signers([buyer, supplier])
-        .rpc(confirmed),
-      "AmountMismatch",
-    );
-    assertEqual(await balance(vault), CLAIMED, "held amount untouched");
+        .rpc(confirmed);
+    await expectRejected(escrow, vault, settle(0, CLAIMED - 100), "AmountMismatch"); // under
+    await expectRejected(escrow, vault, settle(100, CLAIMED), "AmountMismatch"); // over
   });
 
   it("must fail: the buyer cannot settle (refund itself) without the supplier's signature", async () => {
@@ -269,14 +314,17 @@ describe("ClearDock escrow", function () {
       .instruction();
     // Drop the supplier's signer flag so the program itself, not the client, must reject it.
     for (const meta of ix.keys) if (meta.pubkey.equals(supplier.publicKey)) meta.isSigner = false;
-    await expectFailure(provider.sendAndConfirm(new Transaction().add(ix), [buyer], confirmed), "AccountNotSigner");
-    assertEqual(await balance(vault), CLAIMED, "held amount untouched");
+    await expectRejected(
+      escrow,
+      vault,
+      () => provider.sendAndConfirm(new Transaction().add(ix), [buyer], confirmed),
+      "AccountNotSigner",
+    );
   });
 
   it("must fail: held (claimed) funds can't be released by the buyer alone", async () => {
     const { escrow, vault } = await fundEscrow("claim-then-accept");
     await claim(escrow, vault);
-    await expectFailure(acceptAll(escrow, vault).rpc(confirmed), "InvalidStatus");
-    assertEqual(await balance(vault), CLAIMED, "held amount untouched");
+    await expectRejected(escrow, vault, () => acceptAll(escrow, vault).rpc(confirmed), "InvalidStatus");
   });
 });
