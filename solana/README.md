@@ -9,7 +9,6 @@ The basic payment demo needs only CDT plus two wallets. Escrow (below) is a sepa
 ## Prerequisites
 
 - Node 20+ and `npm install` at the repo root.
-- `@solana/web3.js` and `@solana/spl-token` in `server/`. These are requested from the integrator; until merged, run `npm i --no-save @solana/web3.js@^1.98 @solana/spl-token@^0.4 -w server`.
 - Two Phantom wallets switched to **devnet** (Phantom's developer settings: turn on testnet mode, pick Solana Devnet):
   - **buyer**: the café owner who signs payments
   - **supplier**: receives CDT
@@ -20,23 +19,22 @@ The basic payment demo needs only CDT plus two wallets. Escrow (below) is a sepa
 | Variable | Meaning |
 |---|---|
 | `SOLANA_RPC_URL` | Devnet RPC, e.g. `https://api.devnet.solana.com`. A private RPC URL may contain an API key: don't share it. |
-| `DEMO_TOKEN_MINT` | CDT mint address (public). |
-| `VITE_DEMO_TOKEN_MINT` | Same mint, exposed to the browser. |
+| `DEMO_TOKEN_MINT` | CDT mint address (public). The only mint setting: the browser reads it from `GET /api/config`. |
 | `DEMO_BUYER_WALLET` | Buyer's Phantom **public** address. |
-| `DEMO_SUPPLIER_WALLET` | Supplier's Phantom **public** address. Must match `walletAddress` in `shared/fixtures/supplier.json`. |
-| `DEMO_MINT_AUTHORITY_PATH` | Optional. Path to the local mint-authority keypair. Default `solana/.keys/cdt-mint-authority.json`; relative paths resolve from the repo root. Setup tooling only: the server never needs it. |
+| `DEMO_SUPPLIER_WALLET` | Supplier's Phantom **public** address. The server seeds the demo supplier's verified wallet from it, overriding the fixture. After changing it, run `POST /api/dev/reset`. |
+| `DEMO_MINT_AUTHORITY_PATH` | Path to the mint-authority keypair. The team's key is at `C:\Users\vibha\.cleardock\cdt-mint-authority.json`, outside every checkout. If unset, it defaults to `solana/.keys/cdt-mint-authority.json` (gitignored); relative paths resolve from the repo root. Setup tooling only: the server never reads it. |
 
 To get a public address, open Phantom on devnet and copy the account's Solana address.
 
 ## Setup command
 
-From `server/`:
+From the repo root:
 
 ```bash
-npx tsx --env-file-if-exists=../.env scripts/setup-devnet.ts [--check] [--new-mint] [--buyer-target=1000]
+npm run setup:devnet -w server -- [--check] [--new-mint] [--buyer-target=1000]
 ```
 
-(`npm run setup:devnet -w server -- <flags>` once the integrator adds the script.)
+It reads the root `.env`. Values already set in the shell take priority.
 
 | Flag | Effect |
 |---|---|
@@ -51,12 +49,12 @@ The script only reads `.env`; it never edits it. It prints the lines to paste.
 
 1. Fill `DEMO_BUYER_WALLET` and `DEMO_SUPPLIER_WALLET` in `.env`. Leave `DEMO_TOKEN_MINT` empty.
 2. Run with `--new-mint`. The script then:
-   - generates a separate mint-authority key in `solana/.keys/`
+   - generates a separate mint-authority key at `DEMO_MINT_AUTHORITY_PATH`, if none exists there yet
    - funds it with one devnet airdrop attempt if it has under 0.05 SOL
-   - creates the 2-decimal mint (no freeze authority) and records its address in `solana/.keys/cdt-mint-address.txt`
+   - creates the 2-decimal mint (no freeze authority) and records its address in `cdt-mint-address.txt`, next to the key
    - creates both token accounts
    - mints 1000 CDT to the buyer
-3. Paste the printed `DEMO_TOKEN_MINT` / `VITE_DEMO_TOKEN_MINT` / wallet lines into `.env` and share the **public** mint address with the team. The integrator sets `supplier.json`.
+3. Paste the printed `DEMO_TOKEN_MINT` / wallet lines into `.env` and share the **public** mint address with the team. If the server was already running, restart it and run `POST /api/dev/reset` so the supplier wallet is re-seeded from `DEMO_SUPPLIER_WALLET`.
 4. Give the buyer wallet some devnet SOL for fees (see below).
 5. Run again with `--check`. It should end with `✓ Check passed: verified on devnet.`
 
@@ -68,7 +66,7 @@ Run without `--new-mint`. The configured mint is reused and checked:
 - it must be owned by the SPL Token program
 - it must have 2 decimals
 
-If any of those fail, the script stops and explains. It **never** silently creates a replacement. Starting over is explicit: clear `DEMO_TOKEN_MINT`, delete `solana/.keys/cdt-mint-address.txt`, run `--new-mint`, and tell everyone the new mint.
+If any of those fail, the script stops and explains. It **never** silently creates a replacement. Starting over is explicit: clear `DEMO_TOKEN_MINT`, delete `cdt-mint-address.txt` next to the authority key, run `--new-mint`, and tell everyone the new mint.
 
 After demo payments, rerun (optionally with `--buyer-target=N`) to refill the buyer back to the target. Running it twice in a row does nothing the second time.
 
@@ -76,10 +74,10 @@ After demo payments, rerun (optionally with `--buyer-target=N`) to refill the bu
 
 ## Where the mint authority lives
 
-`solana/.keys/cdt-mint-authority.json` (gitignored), or wherever `DEMO_MINT_AUTHORITY_PATH` points. It is a throwaway devnet key that can mint CDT and pays setup fees. It is kept separate from the buyer and supplier wallets. The script never prints it.
+The team's key is at `C:\Users\vibha\.cleardock\cdt-mint-authority.json` (set it in `DEMO_MINT_AUTHORITY_PATH`). That's outside every checkout, so cleaning up a worktree can't delete it. Without the variable, the script falls back to `solana/.keys/cdt-mint-authority.json` (gitignored). It is a throwaway devnet key that can mint CDT and pays setup fees. It is kept separate from the buyer and supplier wallets. The script never prints it.
 
 - Only the person who created the mint has it. Others can still use existing CDT and run `--check`, but can't top up.
-- If you work in a temporary git worktree, point `DEMO_MINT_AUTHORITY_PATH` at a path that outlives it. Deleting the key means CDT can never be minted again for that mint.
+- Deleting the key means CDT can never be minted again for that mint. Keep it outside any checkout, or only under the gitignored `solana/.keys/`.
 
 ## Getting devnet SOL
 
@@ -93,7 +91,7 @@ To fund an address by hand, use https://faucet.solana.com (select Devnet, paste 
 
 ```
 ✓ RPC api.devnet.solana.com is Solana devnet
-+ created CDT mint <MINT> (recorded in .../solana/.keys/cdt-mint-address.txt)
++ created CDT mint <MINT> (recorded in C:\Users\vibha\.cleardock\cdt-mint-address.txt)
 ✓ mint <MINT>: SPL Token program, 2 decimals, supply 0.00 CDT
 + created Buyer CDT token account <BUYER_ATA>
 + created Supplier CDT token account <SUPPLIER_ATA>
@@ -110,7 +108,9 @@ CDT · ClearDock test dollars (devnet)
 
 .env values (public, safe to share):
 DEMO_TOKEN_MINT=<MINT>
-...
+DEMO_BUYER_WALLET=<BUYER>
+DEMO_SUPPLIER_WALLET=<SUPPLIER>
+(the server seeds the supplier wallet from DEMO_SUPPLIER_WALLET; after changing it, POST /api/dev/reset)
 ✓ Setup done: verified on devnet.
 ```
 
