@@ -77,8 +77,10 @@ export interface SignRequest {
   evidence?: Evidence;
   /** Runs right before anything is signed (and again on "Try again"). Throw to refuse with a message. */
   precheck?: () => Promise<void>;
-  /** Called with the signature as soon as the transaction may have reached devnet. */
-  sent?: (signature: string, lastValidBlockHeight: number) => void | Promise<void>;
+  /** Runs with the signed transaction's signature before broadcast; if it throws, nothing is sent. */
+  beforeSend?: (signature: string, lastValidBlockHeight: number) => Promise<void>;
+  /** Runs after the transaction is confirmed and recorded. A failure here is shown, but the transaction stands. */
+  confirmed?: (tx: Tx) => Promise<void>;
   /** Called when a transaction was sent but its outcome is unknown or it failed after broadcast. */
   sendFailed?: (signature: string, outcome: "unknown" | "failed", message: string) => void;
   apply: (tx: Tx, st: DemoState) => Partial<DemoState>;

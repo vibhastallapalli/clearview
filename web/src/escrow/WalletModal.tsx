@@ -122,6 +122,7 @@ export function WalletModal({
                 </a>
               )}
             </div>
+            {state.note && <p className="warn-text">{state.note}</p>}
             <button className="primary" onClick={onClose} autoFocus>
               Done
             </button>

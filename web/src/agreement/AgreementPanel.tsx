@@ -1,35 +1,24 @@
 import { useEffect, useState, type ReactNode } from "react";
-import type { ClaimLine, OrderDetail } from "@cleardock/shared";
+import type { EscrowRecord, OrderDetail } from "@cleardock/shared";
 import { api, money } from "../api";
+import { short } from "../format";
 import { useDemo } from "../escrow/DemoProvider";
 import { PARTY, shortSig, txUrl, type Evidence, type Line } from "../escrow/demo";
-import { recheckEvent } from "../escrow/sign";
+import * as phantom from "../wallet/phantom";
+import { claimWrite } from "./claim";
 import { liveAgreementApi } from "./client";
-import type { AgreementOffer, AgreementOfferKind, AgreementState, Party } from "./contract";
-import {
-  KIND_LABEL,
-  OTHER,
-  heldMinor,
-  loadPending,
-  parseAmountToMinor,
-  reviewedFrom,
-  savePending,
-  settlePlan,
-  splitError,
-  splitFor,
-  viewFor,
-  type PendingSettle,
-} from "./model";
+import type { AgreementOffer, AgreementOfferKind, AgreementState, Party, SettlementAttempt, SettlementStatus } from "./contract";
+import { KIND_LABEL, OTHER, heldMinor, offerError, parseAmountToMinor, reviewedFrom, settlePlan, splitFor, viewFor } from "./model";
 import type { AgreementSession } from "./session";
-import { checkPendingSettle } from "./settleCheck";
+import { partyOf, walletFor } from "./signer";
 
 const time = (iso: string) => new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
 const who = (p: Party) => `${PARTY[p].name} (${p})`;
 
 /**
- * Step 3: the claim, the settlement offers and the settlement transaction, all from the server's shared
- * agreement (web/src/agreement/contract.ts). Nothing here is decided in the browser: offers, answers and
- * "who acts next" come back from the server, and money moves only when the settle transaction is confirmed.
+ * Steps 3–5: the claim, the settlement offers and the settlement transaction, all from Account 1's
+ * agreement API (CONTRACTS.md "Agreement"). Offers and answers are signed by the party's Phantom wallet;
+ * money moves only when the settle transaction is confirmed on devnet with the accepted split.
  */
 export function AgreementPanel({
   detail,
@@ -39,23 +28,13 @@ export function AgreementPanel({
 }: {
   detail: OrderDetail;
   session: AgreementSession;
-  /** The lines the buyer claimed on devnet, as reviewed in this browser (only used to share the claim). */
+  /** The lines as reviewed in this browser (only used when the buyer re-saves a claim). */
   lines: Line[];
   linesFrom: Evidence | null | undefined;
 }) {
   const { role } = useDemo();
-  const orderId = detail.order.id;
   const escrow = detail.order.escrow;
   const held = heldMinor(escrow);
-  const [pending, setPending] = useState<PendingSettle | null>(() => loadPending(orderId));
-
-  // The chain is the truth: once the escrow reads settled, the local "sent" hint is done.
-  useEffect(() => {
-    if (escrow?.status === "settled" && pending) {
-      savePending(null, orderId);
-      setPending(null);
-    }
-  }, [escrow?.status, pending, orderId]);
 
   if (session.status === "loading" && !session.state)
     return (
@@ -73,10 +52,9 @@ export function AgreementPanel({
         <span className="eyebrow">Step 3 · Settle the claim</span>
         <h2 className="h2-sm">{held !== null ? `${money(held)} is held on devnet for the claim.` : "Settlement"}</h2>
         <p className="notice warn">
-          Shared settlement offers aren't available on this server yet, so offers can't be made, answered or signed here.
-          Nothing is simulated in their place, and the held amount stays locked.
+          This server doesn't serve the shared agreement, so offers can't be made, answered or signed here. Nothing is simulated in their
+          place, and the held amount stays locked.
         </p>
-        {pending && <SettlementSent orderId={orderId} pending={pending} setPending={setPending} escrowAddress={escrow?.escrowAddress} />}
       </section>
     );
 
@@ -97,27 +75,48 @@ export function AgreementPanel({
   return (
     <>
       <ClaimCard detail={detail} session={session} st={st} lines={lines} linesFrom={linesFrom} />
-      {st.claim && v.phase !== "settled" && (
-        <Negotiation detail={detail} session={session} st={st} held={held} pending={pending} setPending={setPending} />
-      )}
-      {(v.phase === "settling" || (pending && v.phase !== "settled")) && (
-        <section className="card">
-          <SettlementSent
-            orderId={orderId}
-            pending={pending}
-            setPending={setPending}
-            escrowAddress={escrow?.escrowAddress}
-            serverStatus={st.settlement?.status}
-            serverSignature={st.settlement?.signature ?? null}
-          />
-        </section>
-      )}
+      {st.claim?.status === "filed" && v.phase !== "settled" && <Negotiation detail={detail} session={session} st={st} held={held} />}
+      {st.settlement && st.settlement.attempts.length > 0 && <SettlementCard detail={detail} session={session} st={st} />}
       {v.phase === "settled" && v.current && (
         <p className="note">
           Settled on devnet as agreed in offer v{v.current.version} ({KIND_LABEL[v.current.kind].toLowerCase()}).
         </p>
       )}
     </>
+  );
+}
+
+// ---------- wallet ----------
+
+/** The connected Phantom account, kept current. */
+function usePhantomKey(): string | null {
+  const [key, setKey] = useState<string | null>(() => phantom.currentPublicKey());
+  useEffect(() => phantom.onAccountChange(setKey), []);
+  return key;
+}
+
+/** Which wallet will sign for this viewer, and whether Phantom is on it. */
+function WalletLine({ escrow, role }: { escrow: EscrowRecord | null | undefined; role: Party }) {
+  const key = usePhantomKey();
+  const expected = walletFor(escrow, role);
+  const on = partyOf(escrow, key);
+  if (!expected) return null;
+  const installed = !!phantom.getPhantom();
+  return (
+    <p className={key === expected ? "caption-plain" : "notice warn"}>
+      {!installed
+        ? `Phantom isn't installed in this browser, so the ${role} wallet ${short(expected)} can't sign here.`
+        : !key
+          ? `Your offers and answers are signed with the ${role} wallet ${short(expected)} in Phantom. `
+          : key === expected
+            ? `Signing as the ${role} wallet ${short(expected)} (Phantom). Signing an offer or answer moves no funds.`
+            : `Phantom is on ${short(key)}${on ? ` (the ${on} wallet)` : ""}. Switch it to the ${role} wallet ${short(expected)} to act as the ${role}.`}
+      {installed && !key && (
+        <button className="secondary sm" onClick={() => phantom.connect().catch(() => {})}>
+          Connect Phantom
+        </button>
+      )}
+    </p>
   );
 }
 
@@ -141,47 +140,46 @@ function ClaimCard({
   const [busy, setBusy] = useState(false);
   const escrow = detail.order.escrow;
   const claimTx = escrow?.events.find((e) => e.action === "claim")?.signature ?? null;
-  const claimed = lines.filter((l) => l.claim);
-  const claimedMinor = escrow?.claimedMinor ?? 0;
+  const c = st.claim;
 
-  if (!st.claim) {
+  const confirm = async () => {
+    if (!claimTx) return;
+    setBusy(true);
+    setError(null);
+    try {
+      session.accept(await liveAgreementApi.confirmClaim(detail.order.id, claimTx));
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (!c) {
     if (!escrow || !claimTx) return null;
     if (role !== "buyer")
       return (
         <section className="card">
           <span className="eyebrow">Step 3 · Claim</span>
-          <h2 className="h2-sm">{PARTY.buyer.name} locked {money(claimedMinor)} with a claim on devnet.</h2>
-          <p className="body">Waiting for them to share which lines they claimed and their photo proof.</p>
+          <h2 className="h2-sm">
+            {PARTY.buyer.name} locked {money(escrow.claimedMinor)} with a claim on devnet.
+          </h2>
+          <p className="body">Waiting for them to save which lines they claimed, and their photo proof, with ClearDock.</p>
         </section>
       );
-    // The claimed lines are this browser's review of the station report; the server checks them against the chain.
-    const canShare = !!linesFrom && claimed.length > 0 && claimed.reduce((s, l) => s + l.priceMinor, 0) === claimedMinor;
-    const share = async () => {
-      setBusy(true);
+    // The claim is on devnet but its lines were never saved (e.g. a claim from an older build). Save them now.
+    const claimed = lines.filter((l) => l.claim);
+    const canSave = !!linesFrom && claimed.reduce((s, l) => s + l.priceMinor, 0) === escrow.claimedMinor;
+    const save = async () => {
       setError(null);
-      try {
-        const claimLines: ClaimLine[] = claimed.map((l) => ({ sku: null, description: l.label, claimedMinor: l.priceMinor, reason: "missing" }));
-        await liveAgreementApi.fileClaim(detail.order.id, {
-          as: "buyer",
-          scanId: linesFrom!.scanId,
-          evidenceRevision: linesFrom!.revision,
-          lines: claimLines,
-          claimedMinor,
-          proofIds: detail.proofs.filter((p) => p.stationScanId === linesFrom!.scanId).map((p) => p.id),
-          claimSignature: claimTx,
-        });
-        await session.refresh();
-      } catch (err) {
-        setError((err as Error).message);
-      } finally {
-        setBusy(false);
-      }
+      const saved = await session.write(claimWrite(st, detail, lines, linesFrom!));
+      if (saved) await confirm();
     };
     return (
       <section className="card">
         <span className="eyebrow">Step 3 · Claim</span>
-        <h2 className="h2-sm">Your claim locked {money(claimedMinor)} on devnet. Share it with the supplier.</h2>
-        {canShare ? (
+        <h2 className="h2-sm">Your claim locked {money(escrow.claimedMinor)} on devnet. Save its lines so the supplier can see them.</h2>
+        {canSave ? (
           <>
             <ul className="small">
               {claimed.map((l) => (
@@ -190,26 +188,30 @@ function ClaimCard({
                 </li>
               ))}
             </ul>
-            <button className="primary" onClick={share} disabled={busy}>
-              {busy ? "Sharing…" : "Share claim with supplier"}
+            <WalletLine escrow={escrow} role="buyer" />
+            <button className="primary" onClick={save} disabled={busy || session.busy}>
+              {session.busy ? "Waiting for Phantom…" : "Sign and save the claim"}
             </button>
           </>
         ) : (
           <p className="notice warn">
-            This browser doesn't have the station review the claim was made from, so it can't list the claimed lines. Open the
-            order on the device that filed the claim.
+            This browser doesn't have the station review the claim was made from, so it can't list the claimed lines. Open the order on the
+            device that filed the claim.
           </p>
         )}
-        {error && <p className="error">{error}</p>}
+        {(error || session.notice) && <p className="error">{error ?? session.notice!.text}</p>}
       </section>
     );
   }
 
-  const c = st.claim;
   const proofs = detail.proofs.filter((p) => c.proofIds.includes(p.id));
+  const filed = c.status === "filed";
   return (
     <section className="card">
-      <span className="eyebrow">Step 3 · Claim · filed {time(c.filedAt)}</span>
+      <div className="row between wrap">
+        <span className="eyebrow">Step 3 · Claim · {filed ? `filed ${time(c.filedAt!)}` : `saved ${time(c.preparedAt)}`}</span>
+        <span className={`pill ${filed ? "ok" : "warn"} pill-xs`}>{filed ? "Verified on devnet" : "Saved · not confirmed on devnet"}</span>
+      </div>
       <h2 className="h2-sm">
         {PARTY.buyer.name} claimed {money(c.claimedMinor)}.
       </h2>
@@ -225,45 +227,55 @@ function ClaimCard({
       </div>
       <p className="caption">
         From station scan {c.scanId} · revision {c.evidenceRevision}
-        {c.scanId !== detail.order.latestScanId && " · the station has scanned again since"} ·{" "}
-        <a href={txUrl(c.claimSignature)} target="_blank" rel="noreferrer">
-          claim tx {shortSig(c.claimSignature)} ↗
-        </a>
+        {c.scanId !== detail.order.latestScanId && " · the station has scanned again since; the claim keeps its original scan"}
+        {c.claimSignature && (
+          <>
+            {" · "}
+            <a href={txUrl(c.claimSignature)} target="_blank" rel="noreferrer">
+              claim tx {shortSig(c.claimSignature)} ↗
+            </a>
+          </>
+        )}
+        {c.chain && ` · ${money(c.chain.heldMinor)} held after the claim`}
       </p>
       <p className="note">
         {proofs.length
           ? `${proofs.length} photo${proofs.length === 1 ? "" : "s"} attached as proof (raw photos, shown below; not checked by AI).`
           : "No photo proof attached to the claim."}
       </p>
+      {!filed && (
+        <>
+          <p className="notice warn">
+            {claimTx
+              ? "The claim transaction is on devnet but isn't linked yet. Confirming checks it on devnet; no wallet signature is needed."
+              : "Saved before the on-chain claim. Waiting for the buyer's claim transaction on devnet."}
+          </p>
+          {claimTx && (
+            <button className="secondary sm" onClick={confirm} disabled={busy}>
+              {busy ? "Checking devnet…" : "Confirm the on-chain claim"}
+            </button>
+          )}
+        </>
+      )}
+      {error && <p className="error">{error}</p>}
     </section>
   );
 }
 
 // ---------- offers ----------
 
-function Negotiation({
-  detail,
-  session,
-  st,
-  held,
-  pending,
-  setPending,
-}: {
-  detail: OrderDetail;
-  session: AgreementSession;
-  st: AgreementState;
-  held: number | null;
-  pending: PendingSettle | null;
-  setPending: (p: PendingSettle | null) => void;
-}) {
+function Negotiation({ detail, session, st, held }: { detail: OrderDetail; session: AgreementSession; st: AgreementState; held: number | null }) {
   const { role, sign } = useDemo();
   const [countering, setCountering] = useState(false);
-  const v = viewFor(st, role, detail.order.escrow);
+  const [settleError, setSettleError] = useState<string | null>(null);
+  const escrow = detail.order.escrow;
+  const v = viewFor(st, role, escrow);
   const cur = v.current;
   const other = OTHER[role];
-  // What this render shows is what the user reviews; answers carry it, and are refused if it changed.
+  // What this render shows is what the user reviews; answers carry it and are refused if it changed.
   const reviewed = cur ? reviewedFrom(st, cur) : null;
-  const heldMismatch = held !== null && held !== st.claim!.claimedMinor;
+  const claimHeld = st.claim?.chain?.heldMinor ?? null;
+  const heldMismatch = held !== null && claimHeld !== null && held !== claimHeld;
 
   useEffect(() => {
     if (!v.canRespond) setCountering(false);
@@ -271,10 +283,11 @@ function Negotiation({
 
   const startSettle = () => {
     if (!cur || !reviewed) return;
+    setSettleError(null);
     const orderId = detail.order.id;
-    const plan = settlePlan(st, detail.order.escrow, reviewed);
+    const plan = settlePlan(st, escrow, reviewed);
     if (!plan.ok) {
-      session.notice = { tone: "warn", text: plan.reason };
+      setSettleError(plan.reason);
       session.refresh();
       return;
     }
@@ -287,35 +300,38 @@ function Negotiation({
           ["To supplier", money(plan.toSupplier)],
           ["Back to buyer", money(plan.toBuyer)],
           ["Held on devnet", money(held)],
+          ["Before sending", "The signature is recorded with ClearDock first (one more Phantom message, moves nothing)"],
         ],
         chain: { action: "settle", toSupplier: plan.toSupplier, toBuyer: plan.toBuyer },
         // Re-read the agreement and the chain right before signing: never sign a split that changed.
         precheck: async () => {
-          if (loadPending(orderId))
-            throw new Error("A settlement transaction was already sent from this browser. Re-check it before signing again.");
           await session.refresh();
           const { order } = await api.order(orderId);
           const again = settlePlan(session.state!, order.escrow, reviewed);
           if (!again.ok) throw new Error(again.reason);
         },
-        sent: async (signature, lastValidBlockHeight) => {
-          const p: PendingSettle = { orderId, offerId: cur.id, signature, lastValidBlockHeight, sentAt: new Date().toISOString() };
-          savePending(p, orderId);
-          setPending(p);
-          await liveAgreementApi.recordSettlement(orderId, { offerId: cur.id, signature });
+        // Both signatures are on the transaction. Record it with the server before it can reach devnet, so a
+        // lost page can never lead to a second, unrecorded settle transaction.
+        beforeSend: async (signature, lastValidBlockHeight) => {
+          const as = partyOf(escrow, phantom.currentPublicKey());
+          if (!as) throw new Error("Phantom isn't on the buyer or supplier wallet, so the settlement can't be recorded.");
+          const saved = await session.write({ action: "record_settlement", as, offerId: cur.id, signature, lastValidBlockHeight });
+          if (!saved) throw new Error(session.notice?.text ?? "ClearDock didn't record the settlement.");
         },
-        sendFailed: (_sig, outcome) => {
-          if (outcome === "failed") {
-            savePending(null, orderId);
-            setPending(null);
-          }
+        confirmed: async (tx) => {
+          session.accept(await liveAgreementApi.recheckSettlement(orderId, tx.sig));
         },
-        // The outcome is read from the server's verified escrow record, not from this reply.
+        sendFailed: () => {
+          session.refresh();
+        },
+        // The outcome is read from the server's verified settlement and escrow, not from this reply.
         apply: () => ({}),
       },
       detail,
     );
   };
+
+  const settling = !!st.settlement && ["submitted", "unknown"].includes(st.settlement.status);
 
   return (
     <section className="card">
@@ -326,7 +342,7 @@ function Negotiation({
 
       {heldMismatch && (
         <p className="notice warn">
-          The claim says {money(st.claim!.claimedMinor)} but devnet holds {money(held)}. Offers must split what devnet holds.
+          The claim locked {money(claimHeld)} but devnet now holds {money(held)}. Offers can't be made until that is explained.
         </p>
       )}
 
@@ -344,47 +360,52 @@ function Negotiation({
             {v.youAct ? `Your turn: accept, counter or reject ${PARTY[cur.proposedBy].name}'s offer.` : `Waiting on ${who(v.waitingOn ?? other)} to answer.`}
           </p>
           {v.canRespond && !countering && (
-            <div className="row wrap">
-              <button className="primary" disabled={session.busy} onClick={() => session.respond(role, reviewed!, true)}>
-                Accept offer v{cur.version}
-              </button>
-              <button className="secondary" disabled={session.busy} onClick={() => setCountering(true)}>
-                Counter
-              </button>
-              <button className="danger-link" disabled={session.busy} onClick={() => session.respond(role, reviewed!, false)}>
-                Reject
-              </button>
-            </div>
-          )}
-          {v.canRespond && !countering && (
-            <p className="note">Accepting agrees the split. No money moves until both of you sign the settlement transaction and devnet confirms it.</p>
-          )}
-        </OfferView>
-      )}
-
-      {cur && cur.status === "accepted" && (v.phase === "agreed" || v.phase === "settling") && (
-        <OfferView offer={cur} label="Agreement reached">
-          <p className="notice warn">
-            {v.phase === "agreed"
-              ? `Agreed, not paid: no funds have moved. The escrow still holds ${money(held)} until the settlement transaction is signed by both parties and confirmed on devnet.`
-              : "Agreed and sent for settlement. It is not paid or refunded until devnet confirms it (see below)."}
-          </p>
-          {v.phase === "agreed" && !pending && (
             <>
+              <div className="row wrap">
+                <button className="primary" disabled={session.busy} onClick={() => session.respond(role, reviewed!, true)}>
+                  {session.busy ? "Waiting for Phantom…" : `Accept offer v${cur.version}`}
+                </button>
+                <button className="secondary" disabled={session.busy} onClick={() => setCountering(true)}>
+                  Counter
+                </button>
+                <button className="danger-link" disabled={session.busy} onClick={() => session.respond(role, reviewed!, false)}>
+                  Reject
+                </button>
+              </div>
               <p className="note">
-                Both signatures go on one transaction. In this build they are collected on one computer: the buyer signs in Phantom, then
-                Phantom is switched to the supplier account to sign the same transaction. Signing from two separate devices isn't supported
-                yet.
+                Accepting agrees the split. No money moves until both of you sign the settlement transaction and devnet confirms it.
               </p>
-              <button className="primary" disabled={session.busy || held === null} onClick={startSettle}>
-                Sign settlement: {money(cur.toSupplierMinor)} to supplier · {money(cur.toBuyerMinor)} to buyer
-              </button>
             </>
           )}
         </OfferView>
       )}
 
-      {held !== null && (v.phase === "no_offer" ? v.canPropose : countering) && (
+      {cur && cur.status === "accepted" && (
+        <OfferView offer={cur} label="Agreement reached">
+          <p className="notice warn">
+            {settling
+              ? "Agreed and sent for settlement. Nothing is paid or refunded until devnet confirms it (see below)."
+              : `Agreed, not paid: no funds have moved. The escrow still holds ${money(held)} until the settlement transaction is signed by both parties and confirmed on devnet.`}
+          </p>
+          {v.phase === "agreed" && (
+            <>
+              {st.settlement?.status === "failed" && (
+                <p className="warn-text">The last settle transaction provably moved nothing. A fresh one needs both signatures again.</p>
+              )}
+              <p className="note">
+                Both signatures go on one transaction. In this build they are collected on one computer: the buyer signs in Phantom, then
+                Phantom is switched to the supplier account to sign the same transaction. Signing from two separate devices isn't supported.
+              </p>
+              <button className="primary" disabled={session.busy || held === null} onClick={startSettle}>
+                Sign settlement: {money(cur.toSupplierMinor)} to supplier · {money(cur.toBuyerMinor)} to buyer
+              </button>
+              {settleError && <p className="error">{settleError}</p>}
+            </>
+          )}
+        </OfferView>
+      )}
+
+      {held !== null && !heldMismatch && (v.phase === "no_offer" ? v.canPropose : countering) && (
         <OfferForm
           held={held}
           counterOf={countering ? cur : null}
@@ -393,7 +414,8 @@ function Negotiation({
           onSend={(kind, sup, buy) => session.propose(role, kind, sup, buy)}
         />
       )}
-      {v.phase === "no_offer" && !v.canPropose && v.waitingOn && <p className="note">Waiting on {who(v.waitingOn)} to propose.</p>}
+
+      {(v.canPropose || v.canRespond) && <WalletLine escrow={escrow} role={role} />}
 
       {session.notice && (
         <div className="row wrap gap-6">
@@ -416,8 +438,8 @@ function Negotiation({
       )}
 
       <p className="caption-plain">
-        "Viewing as" is a demo switch, not a sign-in: this server can't verify which party sends an offer or an answer. Signatures on
-        devnet are the only proof of who agreed to move money.
+        "Viewing as" only picks which screens you see. The server checks each offer and answer against the buyer or supplier wallet on the
+        escrow: it proves which wallet acted, not which person or device.
       </p>
     </section>
   );
@@ -462,7 +484,7 @@ function OfferView({ offer, label, past, children }: { offer: AgreementOffer; la
 const KINDS: { id: AgreementOfferKind; desc: string }[] = [
   { id: "full_refund", desc: "All held money goes back to the buyer." },
   { id: "full_release", desc: "All held money goes to the supplier." },
-  { id: "split", desc: "Choose how much the supplier gets; the rest goes back to the buyer." },
+  { id: "split", desc: "Choose how much the supplier gets; the rest goes back to the buyer. Both must get something." },
 ];
 
 function OfferForm({
@@ -482,7 +504,7 @@ function OfferForm({
   const [supText, setSupText] = useState(() => (Math.floor(held / 2) / 100).toFixed(2));
   const supMinor = kind === "split" ? parseAmountToMinor(supText) : 0;
   const split = supMinor === null ? null : splitFor(kind, held, supMinor);
-  const err = supMinor === null ? "Enter an amount like 5.00." : split ? splitError(held, split.toSupplierMinor, split.toBuyerMinor) : null;
+  const err = supMinor === null ? "Enter an amount like 5.00." : split ? offerError(kind, held, split.toSupplierMinor, split.toBuyerMinor) : null;
 
   return (
     <div className="stack-8">
@@ -524,7 +546,7 @@ function OfferForm({
       {err && <p className="warn-text">{err}</p>}
       <div className="row wrap">
         <button className="primary" disabled={busy || !!err || !split} onClick={() => split && onSend(kind, split.toSupplierMinor, split.toBuyerMinor)}>
-          {counterOf ? `Send counter-offer (replaces v${counterOf.version})` : "Send offer"}
+          {busy ? "Waiting for Phantom…" : counterOf ? `Sign and send counter-offer (replaces v${counterOf.version})` : "Sign and send offer"}
         </button>
         {onCancel && (
           <button className="secondary" onClick={onCancel} disabled={busy}>
@@ -532,88 +554,81 @@ function OfferForm({
           </button>
         )}
       </div>
-      <p className="note">Sending an offer moves no money. It only takes effect if the other side accepts and you both sign.</p>
+      <p className="note">Your wallet signs the offer so the other side knows it came from you. It moves no money.</p>
     </div>
   );
 }
 
 // ---------- settlement transaction ----------
 
-function SettlementSent({
-  orderId,
-  pending,
-  setPending,
-  escrowAddress,
-  serverStatus,
-  serverSignature = null,
-}: {
-  orderId: string;
-  pending: PendingSettle | null;
-  setPending: (p: PendingSettle | null) => void;
-  escrowAddress: string | undefined;
-  serverStatus?: string;
-  serverSignature?: string | null;
-}) {
-  const [msg, setMsg] = useState<{ tone: "warn" | "bad" | "ok"; text: string } | null>(null);
-  const [busy, setBusy] = useState(false);
-  const signature = serverSignature ?? pending?.signature ?? null;
-  if (!signature) return null;
+const SETTLE_STATUS: Record<Exclude<SettlementStatus, "awaiting_signatures">, [string, string]> = {
+  submitted: ["Sent · waiting for devnet", "info"],
+  unknown: ["Outcome unknown", "warn"],
+  failed: ["Moved nothing", "bad"],
+  confirmed: ["Confirmed on devnet", "ok"],
+};
 
-  const recheck = async () => {
+function SettlementCard({ detail, session, st }: { detail: OrderDetail; session: AgreementSession; st: AgreementState }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const s = st.settlement!;
+  const attempts = [...s.attempts].reverse();
+  const inFlight = s.status === "submitted" || s.status === "unknown";
+
+  const recheck = async (signature: string) => {
     setBusy(true);
-    setMsg(null);
+    setError(null);
     try {
-      if (!escrowAddress) throw new Error("This order has no recorded escrow.");
-      // The server verifies the settle transaction on devnet and updates the escrow record (same signature = re-check).
-      const detail = await recheckEvent(orderId, "settle", signature, escrowAddress);
-      if (detail.order.escrow?.status === "settled") {
-        savePending(null, orderId);
-        setPending(null);
-        setMsg({ tone: "ok", text: "Confirmed on devnet and verified by ClearDock." });
-      }
-      if (pending) await liveAgreementApi.recordSettlement(orderId, { offerId: pending.offerId, signature }).catch(() => {});
+      session.accept(await liveAgreementApi.recheckSettlement(detail.order.id, signature));
     } catch (err) {
-      const reason = (err as Error).message;
-      if (!pending) {
-        setMsg({ tone: "warn", text: `Not confirmed yet: ${reason}` });
-      } else {
-        try {
-          const outcome = await checkPendingSettle(pending);
-          if (outcome === "expired") {
-            savePending(null, orderId);
-            setPending(null);
-            setMsg({ tone: "warn", text: "It expired without landing, so nothing moved. You can sign a fresh settlement (both signatures again)." });
-          } else if (outcome === "pending") {
-            setMsg({ tone: "warn", text: `Not on devnet yet, and it can still land until block ${pending.lastValidBlockHeight}. Check again shortly; don't sign another.` });
-          } else {
-            setMsg({ tone: "bad", text: `It is on devnet, but ClearDock couldn't verify it: ${reason}` });
-          }
-        } catch (e) {
-          setMsg({ tone: "bad", text: `Couldn't reach devnet to check: ${(e as Error).message}` });
-        }
-      }
+      setError((err as Error).message);
     } finally {
       setBusy(false);
     }
   };
 
   return (
-    <div className="stack-8">
-      <span className="eyebrow">Settlement transaction</span>
-      <h2 className="h2-sm">{serverStatus === "unknown" ? "Sent · confirmation unknown" : "Sent · waiting for devnet confirmation"}</h2>
-      <p className="body">
-        Nothing is shown as paid or refunded until devnet confirms it and ClearDock verifies the amounts. Don't sign another settlement
-        while this one could still land.
-      </p>
-      <a className="mono small" href={txUrl(signature)} target="_blank" rel="noreferrer">
-        tx {shortSig(signature)} ↗
-      </a>
-      <div className="row wrap gap-6">
-        <button className="secondary sm" onClick={recheck} disabled={busy}>
-          {busy ? "Checking…" : "Re-check on devnet"}
-        </button>
+    <section className="card">
+      <div className="row between wrap">
+        <span className="eyebrow">Step 5 · Settlement transaction</span>
+        {s.status !== "awaiting_signatures" && <span className={`pill ${SETTLE_STATUS[s.status][1]} pill-xs`}>{SETTLE_STATUS[s.status][0]}</span>}
       </div>
-      {msg && <p className={msg.tone === "bad" ? "error" : msg.tone === "ok" ? "ok-text" : "notice warn"}>{msg.text}</p>}
-    </div>
+      <h2 className="h2-sm">
+        {s.status === "confirmed"
+          ? "Settled on devnet with the agreed split."
+          : s.status === "failed"
+            ? "The last settle transaction moved nothing."
+            : s.status === "unknown"
+              ? "Sent · outcome unknown"
+              : "Sent · waiting for devnet confirmation"}
+      </h2>
+      {s.error && <p className={s.status === "failed" ? "warn-text" : "notice warn"}>{s.error}</p>}
+      {inFlight && (
+        <p className="body">
+          Nothing is shown as paid or refunded until ClearDock verifies the transaction on devnet with the agreed amounts. Don't sign another
+          settlement while this one could still move funds.
+        </p>
+      )}
+      <div className="kv">
+        {attempts.map((a: SettlementAttempt, i) => (
+          <div key={a.signature} className="kv-row">
+            <span>
+              <a className="mono" href={txUrl(a.signature)} target="_blank" rel="noreferrer">
+                tx {shortSig(a.signature)} ↗
+              </a>{" "}
+              · reported by {a.reportedBy} {time(a.at)} · valid until block {a.lastValidBlockHeight}
+              {a.error && i > 0 && ` · ${a.error}`}
+            </span>
+            <span className="kv-value">{SETTLE_STATUS[a.status][0]}</span>
+          </div>
+        ))}
+      </div>
+      {inFlight && s.signature && (
+        <button className="secondary sm" onClick={() => recheck(s.signature!)} disabled={busy}>
+          {busy ? "Checking devnet…" : "Re-check on devnet"}
+        </button>
+      )}
+      {error && <p className="error">{error}</p>}
+    </section>
   );
 }

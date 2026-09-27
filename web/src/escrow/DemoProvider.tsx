@@ -111,10 +111,16 @@ export function DemoProvider({ children }: { children: ReactNode }) {
             supplierReady.current = resolve;
             setModal((m) => (m ? { ...m, phase: "switch", supplier, note } : m));
           }),
-        sent: request.sent,
+        beforeSend: request.beforeSend,
       });
       update(orderId, (st) => request.apply(tx, st));
-      setModal((m) => (m ? { ...m, phase: "done", tx } : m));
+      let note: string | undefined;
+      try {
+        await request.confirmed?.(tx);
+      } catch (err) {
+        note = `Confirmed on devnet, but ClearDock couldn't update the agreement: ${(err as Error).message} Use the order page to re-check.`;
+      }
+      setModal((m) => (m ? { ...m, phase: "done", tx, note } : m));
     } catch (err) {
       if (err instanceof SentTransactionError) {
         request.sendFailed?.(err.signature, err.outcome, err.message);

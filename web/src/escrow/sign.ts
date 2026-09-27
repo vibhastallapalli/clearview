@@ -18,8 +18,11 @@ export interface SignHooks {
   status: (text: string) => void;
   /** settle only: resolves when the user says Phantom is now on the supplier account. */
   waitForSupplier: (supplier: string, note?: string) => Promise<void>;
-  /** Called with the transaction's signature as soon as it may have reached devnet, before confirmation. */
-  sent?: (signature: string, lastValidBlockHeight: number) => void | Promise<void>;
+  /**
+   * Called with the fully signed transaction's signature before it is broadcast. If it throws, nothing is
+   * sent (the signed bytes are dropped and expire). Used to record a settle signature with the server first.
+   */
+  beforeSend?: (signature: string, lastValidBlockHeight: number) => Promise<void>;
 }
 
 /**
@@ -93,17 +96,22 @@ export async function signAndSend(request: SignRequest, detail: OrderDetail, hoo
 
   // A transaction's id is its fee payer's signature, known before broadcast.
   const signature = base58(tx.signatures[0].signature!);
+  if (hooks.beforeSend) {
+    hooks.status("Recording the signed transaction with ClearDock before sending…");
+    try {
+      await hooks.beforeSend(signature, lastValidBlockHeight);
+    } catch (err) {
+      throw new Error(`Not sent: ${(err as Error).message}`);
+    }
+  }
   hooks.status("Sending to devnet…");
   try {
     await connection.sendRawTransaction(tx.serialize(), { preflightCommitment: "confirmed" });
   } catch (err) {
     // The RPC answered with a rejection (e.g. preflight failed): it was not accepted, so nothing can land.
     if (err instanceof SendTransactionError) throw err;
-    await reportSent(hooks, signature, lastValidBlockHeight);
     throw new SentTransactionError(`Couldn't tell whether devnet received transaction ${signature}: ${(err as Error).message}`, signature, "unknown");
   }
-  await reportSent(hooks, signature, lastValidBlockHeight);
-
   hooks.status("Waiting for devnet to confirm…");
   let result;
   try {
@@ -127,14 +135,6 @@ export async function signAndSend(request: SignRequest, detail: OrderDetail, hoo
     throw new SentTransactionError((err as Error).message, signature, "unknown");
   }
   return { sig: signature, simulated: false };
-}
-
-async function reportSent(hooks: SignHooks, signature: string, lastValidBlockHeight: number) {
-  try {
-    await hooks.sent?.(signature, lastValidBlockHeight);
-  } catch {
-    // Reporting is best effort; the chain and the escrow events route stay the source of truth.
-  }
 }
 
 /** Ask the server to (re)verify a sent escrow transaction. Same signature again = refresh (CONTRACTS.md). */

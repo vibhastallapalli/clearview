@@ -28,6 +28,8 @@ import { StationSimulator } from "./StationSimulator";
 import { AgreementPanel } from "../agreement/AgreementPanel";
 import { useAgreement } from "../agreement/useAgreement";
 import { KIND_LABEL, currentOffer } from "../agreement/model";
+import { withSavedClaim } from "../agreement/claim";
+import { liveAgreementApi } from "../agreement/client";
 
 const VERDICT: Record<LineVerdict, (discrepancyMinor: number) => [string, Tone]> = {
   match: () => ["✓ Match", "ok"],
@@ -59,9 +61,10 @@ export function EscrowWorkspace({ detail }: { detail: OrderDetail }) {
   const orderId = detail.order.id;
   const onChain = detail.order.escrow;
   const chainStatus = onChain?.status;
-  // A claim on devnet opens the shared agreement (server state, the same on every device).
-  const hasClaim = !!onChain && onChain.claimedMinor > 0;
-  const agreement = useAgreement(orderId, hasClaim);
+  // The shared agreement (server state, the same on every device) exists once there is a verified escrow:
+  // the claim is saved to it before the on-chain claim, and settlement offers live in it.
+  const agreement = useAgreement(orderId, !!onChain, onChain);
+  const hasClaim = (!!onChain && onChain.claimedMinor > 0) || !!agreement.state?.claim;
   useEffect(() => ensure(orderId, detail), [ensure, orderId, detail]);
   // Follow the chain if it moved on without this browser (reload, other device).
   useEffect(() => {
@@ -274,7 +277,19 @@ export function EscrowWorkspace({ detail }: { detail: OrderDetail }) {
               <p className="note">Filing a claim locks money. It never refunds you by itself: the supplier has to sign too.</p>
               <button
                 className="primary"
-                onClick={() => sign(orderId, reviewedClaim(st, detail, total), detail)}
+                onClick={() =>
+                  sign(
+                    orderId,
+                    withSavedClaim(reviewedClaim(st, detail, total), {
+                      session: agreement,
+                      api: liveAgreementApi,
+                      detail,
+                      lines: st.lines,
+                      from: st.linesFrom,
+                    }),
+                    detail,
+                  )
+                }
               >
                 {claimed ? `Sign: release ${usd(total - claimed)}, claim ${usd(claimed)}` : `Sign: accept all · release ${usd(total)}`}
               </button>
