@@ -96,7 +96,13 @@ export function OrderPage() {
                     {doc && (
                       <div className="small">
                         {doc.source.filename} · {doc.language?.toUpperCase() ?? "?"} ·{" "}
-                        {doc.extractedBy === "mock" ? <span className="pill warn pill-xs">MOCK</span> : "Gemini"}
+                        {doc.extractedBy === "mock" ? (
+                          <span className="pill warn pill-xs">MOCK</span>
+                        ) : doc.extractedBy === "cache" ? (
+                          <span className="pill warn pill-xs">CACHED GEMINI RESULT</span>
+                        ) : (
+                          "Gemini"
+                        )}
                         <ul>
                           {doc.lines.map((l, i) => (
                             <li key={i}>
@@ -141,6 +147,7 @@ export function OrderPage() {
                 <>
                   <img className="evidence" src={latestCapture.imageUrl} alt="Latest delivery capture" />
                   <p className="small muted">
+                    {latestCapture.fixture && <span className="sim">SAMPLE PHOTO · SIMULATED · </span>}
                     {latestCapture.source} · {new Date(latestCapture.capturedAt).toLocaleTimeString()} · sha256{" "}
                     <span className="mono">{latestCapture.imageSha256.slice(0, 10)}…</span>
                   </p>

@@ -1,18 +1,32 @@
 import type { ApiError, Capture, Order, OrderDetail, PaymentTransaction, PhoneProof, PublicConfig } from "@cleardock/shared";
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+/** A failed API call. `status` 0 = the server couldn't be reached; `code` is absent when the reply wasn't an ApiError. */
+export class ApiRequestError extends Error {
+  constructor(
+    message: string,
+    public status: number,
+    public code?: ApiError["code"],
+  ) {
+    super(message);
+  }
+}
+
+export async function request<T>(path: string, init?: RequestInit): Promise<T> {
   let res: Response;
   try {
     res = await fetch(path, init);
   } catch {
-    throw new Error("Can't reach the ClearDock server. Is it running?");
+    throw new ApiRequestError("Can't reach the ClearDock server. Is it running?", 0);
   }
   const body = await res.json().catch(() => null);
-  if (!res.ok) throw new Error((body as ApiError | null)?.error ?? `Request failed (${res.status})`);
+  if (!res.ok) {
+    const err = body as ApiError | null;
+    throw new ApiRequestError(err?.error ?? `Request failed (${res.status})`, res.status, err?.code);
+  }
   return body as T;
 }
 
-const json = (body: unknown): RequestInit => ({
+export const json = (body: unknown): RequestInit => ({
   method: "POST",
   headers: { "content-type": "application/json" },
   body: JSON.stringify(body),

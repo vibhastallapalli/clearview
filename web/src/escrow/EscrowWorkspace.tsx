@@ -4,33 +4,30 @@ import type { EscrowRecord, LineVerdict, OrderDetail } from "@cleardock/shared";
 import { money } from "../api";
 import { short } from "../format";
 import {
+  AI_SOURCE,
   ESCROW_STATUS,
-  OFFERS,
   PARTY,
-  acceptRequest,
   linesStale,
   reviewedClaim,
   claimedOf,
   fundRequest,
   historyFor,
   orderStatus,
-  physicalRequest,
-  proposeRequest,
-  rejected,
   scanned,
   shortSig,
   totalOf,
   txUrl,
   usd,
-  type ChainAction,
   type DemoState,
   type EscrowEvent,
-  type OfferId,
   type Tone,
 } from "./demo";
 import { useDemo } from "./DemoProvider";
 import { ProofPanel } from "../proof/ProofPanel";
 import { StationSimulator } from "./StationSimulator";
+import { AgreementPanel } from "../agreement/AgreementPanel";
+import { useAgreement } from "../agreement/useAgreement";
+import { KIND_LABEL, currentOffer } from "../agreement/model";
 
 const VERDICT: Record<LineVerdict, (discrepancyMinor: number) => [string, Tone]> = {
   match: () => ["✓ Match", "ok"],
@@ -62,6 +59,9 @@ export function EscrowWorkspace({ detail }: { detail: OrderDetail }) {
   const orderId = detail.order.id;
   const onChain = detail.order.escrow;
   const chainStatus = onChain?.status;
+  // A claim on devnet opens the shared agreement (server state, the same on every device).
+  const hasClaim = !!onChain && onChain.claimedMinor > 0;
+  const agreement = useAgreement(orderId, hasClaim);
   useEffect(() => ensure(orderId, detail), [ensure, orderId, detail]);
   // Follow the chain if it moved on without this browser (reload, other device).
   useEffect(() => {
@@ -83,15 +83,10 @@ export function EscrowWorkspace({ detail }: { detail: OrderDetail }) {
   const cp = PARTY[cpKey];
   const total = onChain?.totalMinor ?? totalOf(st.lines);
   const L = st.esc.locked;
-  const settleChain = (id: OfferId): ChainAction => {
-    const sup = Math.round(L * OFFERS.find((o) => o.id === id)!.sup);
-    return { action: "settle", toSupplier: sup, toBuyer: L - sup };
-  };
   const held = onChain ? total - st.esc.released - st.esc.refunded - L : 0;
   const [stLabel, stTone] = orderStatus(st);
   const [escLabel, escTone] = ESCROW_STATUS[st.esc.status];
-  const isProposer = st.offer?.by === role;
-  const curOffer = st.offer ? OFFERS.find((o) => o.id === st.offer!.id)! : null;
+  const agreed = agreement.state ? currentOffer(agreement.state) : null;
   const claimed = claimedOf(st.lines);
   const settled = st.step === "settled";
   const pct = (v: number) => `${total ? (v / total) * 100 : 0}%`;
@@ -100,7 +95,7 @@ export function EscrowWorkspace({ detail }: { detail: OrderDetail }) {
     ? `${detail.supplier.name} · verified wallet ${short(detail.supplier.walletAddress)} · ${items}`
     : `${PARTY.buyer.name} (synthetic) · buyer wallet ${onChain ? short(onChain.buyer) : PARTY.buyer.wallet} · ${items}`;
   const wait = onChain
-    ? waitCard(st, role, cp.name, curOffer?.label, stationReport ? detail.order.comparison!.summary : null)
+    ? waitCard(st, role, cp.name, stationReport ? detail.order.comparison!.summary : null)
     : isBuyer
       ? null
       : (["Waiting on buyer", `${cp.name} hasn't funded the escrow yet.`, "Once they lock the order total on devnet, you're guaranteed payment for every line they accept."] as [string, string, string]);
@@ -111,7 +106,7 @@ export function EscrowWorkspace({ detail }: { detail: OrderDetail }) {
             onChain.status === "released"
               ? `Accepted in full. Supplier paid ${usd(onChain.releasedMinor)}.`
               : `Both signed. Supplier paid ${usd(onChain.releasedMinor)}, buyer refunded ${usd(onChain.refundedMinor)}.`,
-          label: local.outcome?.label ?? (onChain.claimedMinor ? "Settlement" : undefined),
+          label: agreed?.status === "accepted" ? KIND_LABEL[agreed.kind] : onChain.claimedMinor ? "Settlement" : undefined,
           sup: onChain.releasedMinor,
           buy: onChain.refundedMinor,
           sig: onChain.events.at(-1)?.signature ?? "",
@@ -286,108 +281,7 @@ export function EscrowWorkspace({ detail }: { detail: OrderDetail }) {
             </section>
           )}
 
-          {(st.step === "claimed" || (st.step === "offer" && !isProposer && st.countering)) && (
-            <section className="card">
-              <span className="eyebrow">Step 3 · Settle the claim</span>
-              <h2>
-                {st.countering
-                  ? `Counter ${cp.name}'s offer`
-                  : `${usd(L)} is locked for ${Math.round(L / 1000)} claimed bag${Math.round(L / 1000) === 1 ? "" : "s"} of Product A.`}
-              </h2>
-              <p className="body">Pick an offer. No money moves until you both sign the same one.</p>
-              {st.rejected && st.step === "claimed" && (
-                <p className="notice warn">The last offer was rejected. The locked amount stays locked until you both agree.</p>
-              )}
-              <div className="stack-8" role="radiogroup" aria-label="Settlement offer">
-                {OFFERS.map((o) => {
-                  const sel = st.pick === o.id;
-                  const sup = Math.round(L * o.sup);
-                  return (
-                    <div
-                      key={o.id}
-                      className={sel ? "radio-card on" : "radio-card"}
-                      role="radio"
-                      aria-checked={sel}
-                      tabIndex={0}
-                      onClick={() => update(orderId, { pick: o.id })}
-                      onKeyDown={(e) => (e.key === "Enter" || e.key === " ") && (e.preventDefault(), update(orderId, { pick: o.id }))}
-                    >
-                      <span className="radio-dot" aria-hidden="true">
-                        <span />
-                      </span>
-                      <div className="radio-text">
-                        <span className="radio-label">{o.label}</span>
-                        <span className="radio-desc">{o.desc}</span>
-                        <span className="radio-split">
-                          {usd(sup)} to supplier · {usd(L - sup)} to buyer
-                        </span>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-              <div className="row wrap">
-                <button className="primary" onClick={() => sign(orderId, proposeRequest(st, role), detail)}>
-                  {st.countering ? "Sign & send counter-offer" : "Sign & send offer"}
-                </button>
-                {st.countering && (
-                  <button className="secondary" onClick={() => update(orderId, { countering: false })}>
-                    Back
-                  </button>
-                )}
-              </div>
-            </section>
-          )}
-
-          {st.step === "offer" && !isProposer && !st.countering && curOffer && (
-            <section className="card">
-              <span className="eyebrow">Settlement offer · expires in 24 h</span>
-              <h2>
-                {PARTY[st.offer!.by].name} offers: {curOffer.label}
-              </h2>
-              <p className="body">{curOffer.desc}</p>
-              <div className="totals">
-                <div className="tint plain">
-                  <span className="tint-label muted">To supplier</span>
-                  <span className="tint-value">{usd(Math.round(L * curOffer.sup))}</span>
-                </div>
-                <div className="tint plain">
-                  <span className="tint-label muted">Back to buyer</span>
-                  <span className="tint-value">{usd(L - Math.round(L * curOffer.sup))}</span>
-                </div>
-              </div>
-              <div className="row wrap">
-                <button
-                  className="primary"
-                  onClick={() =>
-                    sign(orderId, curOffer.phys ? acceptRequest(st) : { ...acceptRequest(st), chain: settleChain(curOffer.id) }, detail)
-                  }
-                >
-                  Accept &amp; sign
-                </button>
-                <button
-                  className="secondary"
-                  onClick={() => update(orderId, { countering: true, pick: curOffer.id === "refund" ? "replacement" : "refund" })}
-                >
-                  Counter
-                </button>
-                <button className="danger-link" onClick={() => update(orderId, (s) => rejected(s, role))}>
-                  Reject
-                </button>
-              </div>
-            </section>
-          )}
-
-          {st.step === "physical" && st.pending && st.pending.who === role && (
-            <section className="card">
-              <span className="eyebrow">Both signed · {st.pending.label}</span>
-              <h2>{st.pending.wait}</h2>
-              <p className="body">{st.pending.text}</p>
-              <button className="primary" onClick={() => sign(orderId, { ...physicalRequest(st), chain: settleChain(st.pending!.id) }, detail)}>
-                {st.pending.act}
-              </button>
-            </section>
-          )}
+          {hasClaim && <AgreementPanel detail={detail} session={agreement} lines={st.lines} linesFrom={st.linesFrom} />}
 
           {settled && outcome && (
             <section className="card card-strong">
@@ -529,7 +423,11 @@ function ReceivingReport({ detail }: { detail: OrderDetail }) {
         <span className="row gap-6">
           {!real && <Sim />}
           {real && latestScan!.analyzedBy === "mock" && <span className="sim">MOCK AI</span>}
-          <span className="pill info pill-sm">{source} · AI suggestion{real && latestScan!.analyzedBy !== "mock" ? " · Gemini" : ""}</span>
+          {real && latestScan!.analyzedBy === "cache" && <span className="sim">CACHED RESULT</span>}
+          {latestCapture?.fixture && <span className="sim">SAMPLE PHOTO · SIMULATED</span>}
+          <span className="pill info pill-sm">
+            {source} · AI suggestion{real && latestScan!.analyzedBy !== "mock" ? ` · ${AI_SOURCE[latestScan!.analyzedBy]}` : ""}
+          </span>
         </span>
       </div>
       <div className="report-photo">
@@ -543,9 +441,23 @@ function ReceivingReport({ detail }: { detail: OrderDetail }) {
       <p className="seen">
         <b>Seen:</b>{" "}
         {real
-          ? latestScan!.observed.map((o) => `${o.count} × ${o.labelText}`).join(", ") || "nothing"
+          ? latestScan!.observed.map((o) => `${o.count} × ${o.labelText}`).join(", ") || "no packages read"
           : "2 × PRODUCT A · 500 g, 1 × PRODUCT B · 500 g"}
       </p>
+      {real && !latestScan!.observed.length && (
+        <p className="warn-text">The station read no packages. This isn't a successful scan: check the tray and scan again.</p>
+      )}
+      {real &&
+        latestScan!.unreadable.map((u, i) => (
+          <p key={i} className="warn-text">
+            ? Unreadable: {u}
+          </p>
+        ))}
+      {latestCapture?.sensors.map((w, i) => (
+        <p key={i} className="caption-plain">
+          Weight {w.grams} g{w.simulated ? " · SIMULATED" : ""} · recorded, not used in the comparison
+        </p>
+      ))}
       <div className="report-table" role="table" aria-label="Ordered, billed and seen">
         <div className="report-row head" role="row">
           <span role="columnheader">Product</span>
@@ -598,13 +510,7 @@ function itemsLine(detail: OrderDetail) {
   return "3 × Product A 500 g at $10.00";
 }
 
-function waitCard(
-  st: DemoState,
-  role: "buyer" | "supplier",
-  cpName: string,
-  offerLabel?: string,
-  stationSummary?: string | null,
-): [string, string, string] | null {
+function waitCard(st: DemoState, role: "buyer" | "supplier", cpName: string, stationSummary?: string | null): [string, string, string] | null {
   const isBuyer = role === "buyer";
   if (st.step === "delivered" && !isBuyer && stationSummary)
     return ["Station report ready", `${cpName}'s receiving station scanned the delivery.`, `${stationSummary} They haven't accepted or claimed any line yet.`];
@@ -622,12 +528,5 @@ function waitCard(
       `${cpName} is reviewing the report.`,
       `${stationSummary ?? "The demo scan found 1 bag of Product A missing and a Product B bag that wasn't ordered."} The buyer can accept lines or claim them. A claim can't refund them without your signature.`,
     ];
-  if (st.step === "offer" && st.offer?.by === role && offerLabel)
-    return [
-      "Offer sent · expires in 24 h",
-      `Waiting for ${cpName} to answer your ${offerLabel.toLowerCase()} offer.`,
-      "If they don't answer, the offer expires and no money moves.",
-    ];
-  if (st.step === "physical" && st.pending && st.pending.who !== role) return [`Both signed · ${st.pending.label}`, st.pending.wait, st.pending.text];
   return null;
 }

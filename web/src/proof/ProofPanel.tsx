@@ -70,7 +70,7 @@ export function ProofPanel({ detail, role }: { detail: OrderDetail; role: "buyer
             <option value="all_correct">Sample: all correct</option>
           </select>
           <button className="secondary sm" onClick={sendSample} disabled={sending}>
-            {sending ? "Assessing sample…" : "Use a sample photo"} <span className="sim">SIMULATED</span>
+            {sending ? "Attaching sample…" : "Use a sample photo"} <span className="sim">SIMULATED</span>
           </button>
         </div>
       )}

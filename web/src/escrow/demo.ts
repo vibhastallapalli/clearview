@@ -1,33 +1,17 @@
-import type { Order, ScanResult } from "@cleardock/shared";
+import type { AnalysisSource, Order, ScanResult } from "@cleardock/shared";
 
 /** The only order data the demo needs; both OrderDetail and a queue row satisfy it. */
 export type OrderLike = { order: Order; latestScan?: ScanResult | null };
 
-// Client-side model of the $30 escrow demo (docs/escrow-rulebook.md). Every
-// money movement goes through a SignRequest. Requests with `chain` are real
-// devnet transactions to the escrow program (sign.ts); the rest (offers,
-// counters, rejections) are off-chain agreement steps and stay SIMULATED.
+// Client-side model of the escrow page up to the claim (docs/escrow-rulebook.md). Every money movement
+// is a SignRequest with `chain`: a real devnet transaction to the escrow program (sign.ts). Settlement
+// offers are NOT kept here: they live on the server (web/src/agreement), so both devices see one agreement.
+// What this file stores in the browser is only this viewer's progress through the screens.
 
 export type Role = "buyer" | "supplier";
-export type Step = "delivered" | "scanning" | "report" | "claimed" | "offer" | "physical" | "settled";
-export type OfferId = "refund" | "release" | "split" | "replacement" | "cancel";
+/** claimed = the claim transaction is on devnet; negotiation continues in the shared agreement. */
+export type Step = "delivered" | "scanning" | "report" | "claimed" | "settled";
 export type EscrowStatus = "funded" | "claimed" | "settlement_proposed" | "settled" | "released";
-
-export interface Physical {
-  who: Role;
-  wait: string;
-  act: string;
-  text: string;
-}
-
-export interface Offer {
-  id: OfferId;
-  label: string;
-  desc: string;
-  sup: number;
-  buy: number;
-  phys?: Physical;
-}
 
 export interface Line {
   id: string;
@@ -59,12 +43,7 @@ export interface Outcome {
 export interface DemoState {
   step: Step;
   lines: Line[];
-  offer: { by: Role; id: OfferId } | null;
-  countering: boolean;
-  pick: OfferId;
-  pending: (Physical & { id: OfferId; label: string }) | null;
   outcome: Outcome | null;
-  rejected: boolean;
   events: EscrowEvent[];
   esc: { released: number; refunded: number; locked: number; status: EscrowStatus };
   /** The station evidence the current lines were reviewed from. Null for the SIMULATED demo scan. */
@@ -96,40 +75,14 @@ export interface SignRequest {
   chain?: ChainAction;
   /** Set when the amounts come from reviewed station lines: re-checked against the order just before signing. */
   evidence?: Evidence;
+  /** Runs right before anything is signed (and again on "Try again"). Throw to refuse with a message. */
+  precheck?: () => Promise<void>;
+  /** Called with the signature as soon as the transaction may have reached devnet. */
+  sent?: (signature: string, lastValidBlockHeight: number) => void | Promise<void>;
+  /** Called when a transaction was sent but its outcome is unknown or it failed after broadcast. */
+  sendFailed?: (signature: string, outcome: "unknown" | "failed", message: string) => void;
   apply: (tx: Tx, st: DemoState) => Partial<DemoState>;
 }
-
-export const OFFERS: Offer[] = [
-  { id: "refund", label: "Full refund", desc: "All locked money goes back to the buyer.", sup: 0, buy: 1 },
-  { id: "release", label: "Full release", desc: "All locked money goes to the supplier.", sup: 1, buy: 0 },
-  { id: "split", label: "Split", desc: "Half to each side.", sup: 0.5, buy: 0.5 },
-  {
-    id: "replacement",
-    label: "Replacement",
-    desc: "Supplier ships the missing bag. The money releases when the buyer scans it and signs.",
-    sup: 1,
-    buy: 0,
-    phys: {
-      who: "buyer",
-      wait: "Replacement bag in transit",
-      act: "Scan replacement & sign acceptance",
-      text: "The locked amount stays locked until the buyer scans the replacement and signs acceptance. Then it pays the supplier.",
-    },
-  },
-  {
-    id: "cancel",
-    label: "Cancel with return",
-    desc: "Buyer returns the Product B bag. The refund releases when the supplier scans the return and signs.",
-    sup: 0,
-    buy: 1,
-    phys: {
-      who: "supplier",
-      wait: "Product B bag being returned",
-      act: "Scan returned bag & sign",
-      text: "The refund releases when the supplier scans the returned bag and signs acceptance.",
-    },
-  },
-];
 
 export const PARTY: Record<Role, { name: string; wallet: string; role: string }> = {
   buyer: { name: "Café Luma", wallet: "7xKX…q9Pd", role: "Buyer" },
@@ -165,6 +118,13 @@ export const usd = (minor: number) => `$${(minor / 100).toFixed(2)}`;
 export const shortSig = (s: string) => `${s.slice(0, 5)}…${s.slice(-5)}`;
 export const txUrl = (s: string) => `https://explorer.solana.com/tx/${s}?cluster=devnet`;
 const now = () => new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
+
+/** Who produced an AI result, in words. A cached result is an earlier real answer replayed, not a live call. */
+export const AI_SOURCE: Record<AnalysisSource, string> = {
+  gemini: "Gemini",
+  cache: "Cached Gemini result",
+  mock: "Mock AI",
+};
 
 /** One escrow line per ordered unit, from the real comparison when there is one. */
 export function linesFor(detail: OrderLike | null): Line[] {
@@ -206,16 +166,10 @@ export const claimedOf = (lines: Line[]) => lines.filter((l) => l.claim).reduce(
 
 export function initialState(detail: OrderLike | null): DemoState {
   const lines = linesFor(detail);
-  const total = totalOf(lines);
   return {
     step: "delivered",
     lines,
-    offer: null,
-    countering: false,
-    pick: "refund",
-    pending: null,
     outcome: null,
-    rejected: false,
     events: [
       { label: "Both parties signed the order terms", detail: "3 × Product A 500 g at $10.00 · 3-day inspection window", at: "09:12", sim: true },
       { label: "Carrier: delivered", detail: "Inspection window starts", at: "10:42", sim: true },
@@ -244,7 +198,7 @@ export function fundRequest(st: DemoState, reference: string): SignRequest {
 
 /**
  * With a real station scan and comparison, the report uses them. Without one it is the SIMULATED
- * demo scan: no photo was analysed, so it must not claim Gemini saw anything.
+ * demo scan: no photo was analysed, so it must not claim any AI saw anything.
  */
 export function scanned(st: DemoState, detail?: OrderLike): Partial<DemoState> {
   const lines = detail ? scanLines(detail) : null;
@@ -256,36 +210,17 @@ export function scanned(st: DemoState, detail?: OrderLike): Partial<DemoState> {
       events: withEvent(st, { label: "Receiving report (evidence)", detail: "Demo scan, no photo analysed: 2 × Product A and 1 × Product B", sim: true }),
     };
   }
-  const seen = scan.observed.map((o) => `${o.count} × ${o.labelText}`).join(", ") || "nothing it could read";
+  const seen = scan.observed.map((o) => `${o.count} × ${o.labelText}`).join(", ");
+  const who = AI_SOURCE[scan.analyzedBy];
   return {
     step: "report",
     lines,
     linesFrom: { scanId: detail!.order.latestScanId!, revision: detail!.order.evidenceRevision },
-    events: withEvent(st, { label: "Receiving report (evidence)", detail: `Station scan · ${scan.analyzedBy === "mock" ? "Mock AI" : "Gemini"} saw ${seen}`, sim: scan.analyzedBy === "mock" }),
-  };
-}
-
-function settle(st: DemoState, o: Offer, tx: Tx, label: string): Partial<DemoState> {
-  const L = st.esc.locked;
-  const sup = Math.round(L * o.sup);
-  const buy = L - sup;
-  const rel = st.esc.released + sup;
-  const ref = st.esc.refunded + buy;
-  return {
-    step: "settled",
-    offer: null,
-    pending: null,
-    esc: { released: rel, refunded: ref, locked: 0, status: "settled" },
-    outcome: {
-      title: `Both signed. Supplier paid ${usd(rel)}, buyer refunded ${usd(ref)}.`,
-      label: o.label,
-      sup: rel,
-      buy: ref,
-      sig: tx.sig,
-      simulated: tx.simulated,
-      claim: L,
-    },
-    events: withEvent(st, { label, detail: `Program paid ${usd(sup)} to supplier and refunded ${usd(buy)} to buyer`, ...txEvent(tx) }),
+    events: withEvent(st, {
+      label: "Receiving report (evidence)",
+      detail: seen ? `Station scan · ${who} saw ${seen}` : `Station scan · ${who} read no packages. Check the tray and scan again.`,
+      sim: scan.analyzedBy === "mock",
+    }),
   };
 }
 
@@ -358,81 +293,6 @@ export function claimRequest(st: DemoState): SignRequest {
   };
 }
 
-export function proposeRequest(st: DemoState, role: Role): SignRequest {
-  const o = OFFERS.find((x) => x.id === st.pick)!;
-  const L = st.esc.locked;
-  const sup = Math.round(L * o.sup);
-  return {
-    title: st.countering ? "Send counter-offer" : "Send settlement offer",
-    rows: [
-      ["Offer", o.label],
-      ["To supplier", usd(sup)],
-      ["Back to buyer", usd(L - sup)],
-      ["Expires", "in 24 h"],
-    ],
-    apply: (tx, s) => ({
-      step: "offer",
-      offer: { by: role, id: o.id },
-      countering: false,
-      rejected: false,
-      esc: { ...s.esc, status: "settlement_proposed" },
-      events: withEvent(s, {
-        label: `${PARTY[role].name} offered: ${o.label}`,
-        detail: `${usd(sup)} to supplier · ${usd(L - sup)} to buyer`,
-        ...txEvent(tx),
-      }),
-    }),
-  };
-}
-
-export function acceptRequest(st: DemoState): SignRequest {
-  const o = OFFERS.find((x) => x.id === st.offer!.id)!;
-  const L = st.esc.locked;
-  const sup = Math.round(L * o.sup);
-  const rows: [string, string][] = [
-    ["Offer", o.label],
-    ["To supplier", usd(sup)],
-    ["Back to buyer", usd(L - sup)],
-  ];
-  if (o.phys) {
-    const phys = o.phys;
-    return {
-      title: "Accept offer",
-      rows,
-      apply: (tx, s) => ({
-        step: "physical",
-        pending: { ...phys, id: o.id, label: o.label },
-        events: withEvent(s, { label: `Both signed: ${o.label}`, detail: `${phys.wait} · ${usd(L)} stays locked`, ...txEvent(tx) }),
-      }),
-    };
-  }
-  return { title: "Accept & execute settlement", rows, apply: (tx, s) => settle(s, o, tx, `Both signed: ${o.label}`) };
-}
-
-export function physicalRequest(st: DemoState): SignRequest {
-  const pending = st.pending!;
-  const o = OFFERS.find((x) => x.id === pending.id)!;
-  const L = st.esc.locked;
-  const sup = Math.round(L * o.sup);
-  return {
-    title: pending.act,
-    rows: [
-      ["To supplier", usd(sup)],
-      ["Back to buyer", usd(L - sup)],
-    ],
-    apply: (tx, s) =>
-      settle(s, o, tx, o.id === "replacement" ? "Buyer scanned replacement & signed" : "Supplier scanned return & signed"),
-  };
-}
-
-export const rejected = (st: DemoState, role: Role): Partial<DemoState> => ({
-  step: "claimed",
-  offer: null,
-  rejected: true,
-  esc: { ...st.esc, status: "claimed" },
-  events: withEvent(st, { label: `${PARTY[role].name} rejected the offer`, detail: `${usd(st.esc.locked)} stays locked · case still open` }),
-});
-
 export function historyFor(key: Role, st: DemoState | null) {
   const h = HISTORY[key];
   const extra: HistoryRow[] =
@@ -457,11 +317,9 @@ export function orderStatus(st: DemoState): [string, Tone] {
   const L = st.esc.locked;
   const map: Record<Step, [string, Tone]> = {
     delivered: ["Delivered · awaiting inspection", "info"],
-    scanning: ["Scanning delivery", "info"],
-    report: ["Discrepancy found", "warn"],
+    scanning: ["Demo scan running", "info"],
+    report: ["Report ready · buyer reviewing lines", "info"],
     claimed: [`Claim open · ${usd(L)} locked`, "bad"],
-    offer: ["Settlement offer pending", "warn"],
-    physical: [st.pending?.wait ?? "Waiting on the physical step", "info"],
     settled: [st.esc.status === "released" ? "Released" : "Settled", "ok"],
   };
   return map[st.step];

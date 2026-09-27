@@ -2,10 +2,11 @@ import { createContext, useCallback, useContext, useEffect, useRef, useState, ty
 import type { OrderDetail } from "@cleardock/shared";
 import { api } from "../api";
 import { PARTY, STALE_EVIDENCE, initialState, scanned, type DemoState, type OrderLike, type Role, type SignRequest, type Tx } from "./demo";
-import { signAndSend } from "./sign";
+import { SentTransactionError, signAndSend } from "./sign";
 import { WalletModal, type ModalState } from "./WalletModal";
 
-const STORAGE_KEY = "securoserv.demo.v1";
+// v2: settlement offers moved to the server; v1 kept them (and SIMULATED results) in the browser.
+const STORAGE_KEY = "securoserv.demo.v2";
 
 interface Stored {
   role: Role;
@@ -102,6 +103,7 @@ export function DemoProvider({ children }: { children: ReactNode }) {
         if (order.latestScanId !== request.evidence.scanId || order.evidenceRevision !== request.evidence.revision)
           throw new Error(STALE_EVIDENCE);
       }
+      await request.precheck?.();
       const tx: Tx = await signAndSend(request, detail, {
         status: (status) => setModal((m) => (m ? { ...m, phase: "sending", status } : m)),
         waitForSupplier: (supplier, note) =>
@@ -109,17 +111,26 @@ export function DemoProvider({ children }: { children: ReactNode }) {
             supplierReady.current = resolve;
             setModal((m) => (m ? { ...m, phase: "switch", supplier, note } : m));
           }),
+        sent: request.sent,
       });
       update(orderId, (st) => request.apply(tx, st));
       setModal((m) => (m ? { ...m, phase: "done", tx } : m));
     } catch (err) {
+      if (err instanceof SentTransactionError) {
+        request.sendFailed?.(err.signature, err.outcome, err.message);
+        // Sent but unresolved: never offer to sign again from here; the page offers a re-check.
+        if (err.outcome === "unknown") {
+          setModal((m) => (m ? { ...m, phase: "unknown", error: err.message, tx: { sig: err.signature, simulated: false } } : m));
+          return;
+        }
+      }
       setModal((m) => (m ? { ...m, phase: "error", error: (err as Error).message } : m));
     }
   };
 
   const value: DemoContext = {
     role: store.role,
-    setRole: (role) => setStore((s) => ({ ...s, role, orders: Object.fromEntries(Object.entries(s.orders).map(([k, v]) => [k, { ...v, countering: false }])) })),
+    setRole: (role) => setStore((s) => ({ ...s, role })),
     ensure,
     peek: (orderId) => store.orders[orderId] ?? null,
     states: store.orders,

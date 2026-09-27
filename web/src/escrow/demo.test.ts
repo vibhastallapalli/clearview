@@ -64,3 +64,12 @@ test("a revision bump on the same scan also requires review; SIMULATED demo line
   assert.equal(linesStale(demo, order({})), false);
   assert.equal(linesStale(demo, first), true);
 });
+
+test("the report names cached AI results as cached and never calls an empty read a successful scan", () => {
+  const detail = order({ comparison, latestScanId: "scan_1" });
+  const cached = scanned(initialState(null), { ...detail, latestScan: { ...scan, analyzedBy: "cache" } as ScanResult });
+  assert.match(cached.events!.at(-1)!.detail, /Cached Gemini result saw 2 × Product A/);
+  const empty = scanned(initialState(null), { ...detail, latestScan: { ...scan, observed: [] } as ScanResult });
+  assert.match(empty.events!.at(-1)!.detail, /read no packages\. Check the tray and scan again\./);
+  assert.doesNotMatch(empty.events!.at(-1)!.detail, /saw/);
+});

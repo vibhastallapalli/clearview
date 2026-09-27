@@ -6,7 +6,7 @@ export interface ModalState {
   rows: [string, string][];
   /** true = real devnet transaction signed in Phantom; false = simulated off-chain step. */
   real: boolean;
-  phase: "ask" | "sending" | "switch" | "done" | "error";
+  phase: "ask" | "sending" | "switch" | "done" | "error" | "unknown";
   status?: string;
   supplier?: string;
   note?: string;
@@ -86,6 +86,23 @@ export function WalletModal({
               </button>
               <button className="primary" onClick={onConfirm}>
                 Try again
+              </button>
+            </div>
+          </div>
+        )}
+        {phase === "unknown" && tx && (
+          <div className="stack-8" aria-live="polite">
+            <p className="notice warn">
+              Sent, but the outcome isn't known yet. Don't sign again: re-check it from the order page. Funds may or may not have
+              moved until it is confirmed.
+            </p>
+            <p className="warn-text">{state.error}</p>
+            <a className="mono small" href={txUrl(tx.sig)} target="_blank" rel="noreferrer">
+              tx {shortSig(tx.sig)} ↗
+            </a>
+            <div className="sheet-actions">
+              <button className="primary" onClick={onClose} autoFocus>
+                Close
               </button>
             </div>
           </div>

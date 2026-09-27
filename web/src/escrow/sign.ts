@@ -1,5 +1,5 @@
 import { Buffer } from "buffer";
-import { Connection, PublicKey, SystemProgram, Transaction, TransactionInstruction, type AccountMeta } from "@solana/web3.js";
+import { Connection, PublicKey, SendTransactionError, SystemProgram, Transaction, TransactionExpiredBlockheightExceededError, TransactionInstruction, type AccountMeta } from "@solana/web3.js";
 import type { OrderDetail } from "@cleardock/shared";
 import { api } from "../api";
 import { short } from "../format";
@@ -18,6 +18,22 @@ export interface SignHooks {
   status: (text: string) => void;
   /** settle only: resolves when the user says Phantom is now on the supplier account. */
   waitForSupplier: (supplier: string, note?: string) => Promise<void>;
+  /** Called with the transaction's signature as soon as it may have reached devnet, before confirmation. */
+  sent?: (signature: string, lastValidBlockHeight: number) => void | Promise<void>;
+}
+
+/**
+ * The transaction may be on devnet, but this page couldn't establish its outcome ("unknown") or the chain
+ * rejected it after broadcast ("failed"). Carries the signature so the UI re-checks instead of re-sending.
+ */
+export class SentTransactionError extends Error {
+  constructor(
+    message: string,
+    public signature: string,
+    public outcome: "unknown" | "failed",
+  ) {
+    super(message);
+  }
 }
 
 /**
@@ -75,15 +91,70 @@ export async function signAndSend(request: SignRequest, detail: OrderDetail, hoo
   if (!tx.verifySignatures())
     throw new Error("Not sent: the signatures don't match the transaction (a signature is missing, or Phantom changed the transaction after the first signature).");
 
+  // A transaction's id is its fee payer's signature, known before broadcast.
+  const signature = base58(tx.signatures[0].signature!);
   hooks.status("Sending to devnet…");
-  const signature = await connection.sendRawTransaction(tx.serialize(), { preflightCommitment: "confirmed" });
+  try {
+    await connection.sendRawTransaction(tx.serialize(), { preflightCommitment: "confirmed" });
+  } catch (err) {
+    // The RPC answered with a rejection (e.g. preflight failed): it was not accepted, so nothing can land.
+    if (err instanceof SendTransactionError) throw err;
+    await reportSent(hooks, signature, lastValidBlockHeight);
+    throw new SentTransactionError(`Couldn't tell whether devnet received transaction ${signature}: ${(err as Error).message}`, signature, "unknown");
+  }
+  await reportSent(hooks, signature, lastValidBlockHeight);
+
   hooks.status("Waiting for devnet to confirm…");
-  const result = await connection.confirmTransaction({ signature, blockhash, lastValidBlockHeight }, "confirmed");
-  if (result.value.err) throw new Error(`Transaction ${signature} failed on devnet: ${JSON.stringify(result.value.err)}`);
+  let result;
+  try {
+    result = await connection.confirmTransaction({ signature, blockhash, lastValidBlockHeight }, "confirmed");
+  } catch (err) {
+    if (err instanceof TransactionExpiredBlockheightExceededError)
+      throw new SentTransactionError(
+        `Transaction ${signature} expired without landing. Nothing moved; a fresh transaction needs fresh signatures.`,
+        signature,
+        "failed",
+      );
+    throw new SentTransactionError(`Sent ${signature}, but its confirmation couldn't be checked: ${(err as Error).message}`, signature, "unknown");
+  }
+  if (result.value.err)
+    throw new SentTransactionError(`Transaction ${signature} failed on devnet: ${JSON.stringify(result.value.err)}`, signature, "failed");
 
   hooks.status("Recording on ClearDock (the server verifies it on devnet)…");
-  await recordEvent(detail.order.id, chain.action, signature, escrow.toBase58());
+  try {
+    await recordEvent(detail.order.id, chain.action, signature, escrow.toBase58());
+  } catch (err) {
+    throw new SentTransactionError((err as Error).message, signature, "unknown");
+  }
   return { sig: signature, simulated: false };
+}
+
+async function reportSent(hooks: SignHooks, signature: string, lastValidBlockHeight: number) {
+  try {
+    await hooks.sent?.(signature, lastValidBlockHeight);
+  } catch {
+    // Reporting is best effort; the chain and the escrow events route stay the source of truth.
+  }
+}
+
+/** Ask the server to (re)verify a sent escrow transaction. Same signature again = refresh (CONTRACTS.md). */
+export const recheckEvent = (orderId: string, action: ChainAction["action"], signature: string, escrowAddress: string) =>
+  api.escrowEvent(orderId, { action, signature, escrowAddress });
+
+const B58_ALPHABET = B58;
+function base58(bytes: Uint8Array): string {
+  let n = 0n;
+  for (const b of bytes) n = (n << 8n) | BigInt(b);
+  let out = "";
+  while (n > 0n) {
+    out = B58_ALPHABET[Number(n % 58n)] + out;
+    n /= 58n;
+  }
+  for (const b of bytes) {
+    if (b !== 0) break;
+    out = "1" + out;
+  }
+  return out;
 }
 
 // The server reads the transaction at "confirmed"; its RPC node can lag ours by a few seconds.
