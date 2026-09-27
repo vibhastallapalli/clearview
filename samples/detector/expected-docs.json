@@ -1,0 +1,34 @@
+{
+  "_about": "PROVISIONAL expected extraction for the synthetic can documents, AFTER code converts cases to units. Not yet run against live Gemini (no key configured). Needs products.proposed.json adopted as shared/fixtures/products.json first.",
+  "documents": [
+    {
+      "file": "docs/cans_po_en.pdf",
+      "kind": "purchase_order",
+      "lines": [
+        { "sku": "COKE-CLASSIC-12OZ", "quantity": 6, "unit": "unit", "unitPriceMinor": 100, "from": "1 box, packSize 6, 600 cents" },
+        { "sku": "DIET-COKE-12OZ", "quantity": 2, "unit": "unit", "unitPriceMinor": 100 }
+      ],
+      "totalMinor": 800
+    },
+    {
+      "file": "docs/cans_invoice_es.png",
+      "kind": "invoice",
+      "lines": [
+        { "sku": "COKE-CLASSIC-12OZ", "quantity": 6, "unit": "unit", "unitPriceMinor": 100, "from": "1 paquete de 6, $6.00/paq." },
+        { "sku": "DIET-COKE-12OZ", "quantity": 2, "unit": "unit", "unitPriceMinor": 100 }
+      ],
+      "totalMinor": 800,
+      "outcome": "match"
+    },
+    {
+      "file": "docs/cans_invoice_es_no_pack.png",
+      "kind": "invoice",
+      "lines": [
+        { "sku": null, "why": "1 caja with no pack size: never read as 1 can" },
+        { "sku": "DIET-COKE-12OZ", "quantity": 2, "unit": "unit", "unitPriceMinor": 100 }
+      ],
+      "totalMinor": 800,
+      "outcome": "needs_info"
+    }
+  ]
+}
