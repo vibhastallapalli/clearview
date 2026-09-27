@@ -1,0 +1,22 @@
+{
+  "format": "cleardock.detections.v0",
+  "synthetic": true,
+  "model": { "name": "cleardock-cans", "version": "PROVISIONAL-0" },
+  "orderId": "ord_1001",
+  "imageSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+  "latencyMs": 85,
+  "frames": [
+    {
+      "detections": [
+        { "classId": "coke_classic_12oz", "confidence": 0.93, "box": [102, 88, 140, 260] },
+        { "classId": "coke_classic_12oz", "confidence": 0.91, "box": [260, 90, 138, 258] },
+        { "classId": "coke_classic_12oz", "confidence": 0.9, "box": [418, 92, 141, 262] },
+        { "classId": "coke_classic_12oz", "confidence": 0.94, "box": [102, 380, 139, 259] },
+        { "classId": "coke_classic_12oz", "confidence": 0.92, "box": [260, 382, 140, 261] },
+        { "classId": "coke_classic_12oz", "confidence": 0.89, "box": [418, 379, 142, 260] },
+        { "classId": "diet_coke_12oz", "confidence": 0.88, "box": [600, 90, 137, 259] },
+        { "classId": "diet_coke_12oz", "confidence": 0.9, "box": [600, 381, 139, 262] }
+      ]
+    }
+  ]
+}

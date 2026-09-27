@@ -1,0 +1,30 @@
+[
+  {
+    "sku": "COKE-CLASSIC-12OZ",
+    "names": ["Coca-Cola Classic 12 fl oz can", "Coca-Cola Clásica lata 355 ml"],
+    "unitSizeGrams": 370,
+    "detectorClasses": ["coke_classic_12oz"],
+    "provisional": true
+  },
+  {
+    "sku": "DIET-COKE-12OZ",
+    "names": ["Diet Coke 12 fl oz can", "Coca-Cola Light lata 355 ml"],
+    "unitSizeGrams": 355,
+    "detectorClasses": ["diet_coke_12oz"],
+    "provisional": true
+  },
+  {
+    "sku": "COKE-CLASSIC-7.5OZ",
+    "names": ["Coca-Cola Classic 7.5 fl oz mini can", "Coca-Cola Clásica mini lata 222 ml"],
+    "unitSizeGrams": 235,
+    "detectorClasses": ["coke_classic_7_5oz"],
+    "provisional": true
+  },
+  {
+    "sku": "PEPSI-12OZ",
+    "names": ["Pepsi 12 fl oz can", "Pepsi lata 355 ml"],
+    "unitSizeGrams": 370,
+    "detectorClasses": ["pepsi_12oz"],
+    "provisional": true
+  }
+]
