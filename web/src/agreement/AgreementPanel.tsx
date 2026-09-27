@@ -1,5 +1,5 @@
 import { useEffect, useState, type ReactNode } from "react";
-import type { EscrowRecord, OrderDetail, RemedyDefault } from "@cleardock/shared";
+import type { EscrowRecord, OrderDetail } from "@cleardock/shared";
 import { api, money } from "../api";
 import { short } from "../format";
 import { useDemo } from "../escrow/DemoProvider";
@@ -8,7 +8,7 @@ import * as phantom from "../wallet/phantom";
 import { claimWrite } from "./claim";
 import { liveAgreementApi } from "./client";
 import type { AgreementOffer, AgreementOfferKind, AgreementState, Party, SettlementAttempt, SettlementStatus } from "./contract";
-import { KIND_LABEL, OTHER, belowRemedy, heldMinor, offerError, parseAmountToMinor, reviewedFrom, settlePlan, splitFor, viewFor } from "./model";
+import { KIND_LABEL, OTHER, heldMinor, offerError, parseAmountToMinor, reviewedFrom, settlePlan, splitFor, viewFor } from "./model";
 import type { AgreementSession } from "./session";
 import { partyOf, walletFor } from "./signer";
 
@@ -372,8 +372,6 @@ function Negotiation({ detail, session, st, held }: { detail: OrderDetail; sessi
         </p>
       )}
 
-      <RemedyNote remedy={st.remedy} />
-
       {v.phase === "no_offer" && (
         <p className="body">
           {st.offers.some((o) => o.status === "rejected")
@@ -383,7 +381,7 @@ function Negotiation({ detail, session, st, held }: { detail: OrderDetail; sessi
       )}
 
       {cur && v.phase === "open" && (
-        <OfferView offer={cur} label="Current offer" remedy={st.remedy}>
+        <OfferView offer={cur} label="Current offer">
           <p className={v.youAct ? "notice warn" : "note"}>
             {v.youAct ? `Your turn: accept, counter or reject ${PARTY[cur.proposedBy].name}'s offer.` : `Waiting on ${who(v.waitingOn ?? other)} to answer.`}
           </p>
@@ -409,7 +407,7 @@ function Negotiation({ detail, session, st, held }: { detail: OrderDetail; sessi
       )}
 
       {cur && cur.status === "accepted" && (
-        <OfferView offer={cur} label="Agreement reached" remedy={st.remedy}>
+        <OfferView offer={cur} label="Agreement reached">
           <p className="notice warn">
             {settling
               ? "Agreed and sent for settlement. Nothing is paid or refunded until devnet confirms it (see below)."
@@ -436,7 +434,6 @@ function Negotiation({ detail, session, st, held }: { detail: OrderDetail; sessi
       {held !== null && !heldMismatch && (v.phase === "no_offer" ? v.canPropose : countering) && (
         <OfferForm
           held={held}
-          remedy={st.remedy}
           counterOf={countering ? cur : null}
           busy={session.busy}
           onCancel={countering ? () => setCountering(false) : undefined}
@@ -461,7 +458,7 @@ function Negotiation({ detail, session, st, held }: { detail: OrderDetail; sessi
         <div className="stack-8">
           <span className="eyebrow">Earlier offers</span>
           {v.past.map((o) => (
-            <OfferView key={o.id} offer={o} past remedy={st.remedy} />
+            <OfferView key={o.id} offer={o} past />
           ))}
         </div>
       )}
@@ -481,47 +478,8 @@ const STATUS_PILL: Record<AgreementOffer["status"], [string, string]> = {
   superseded: ["Superseded by a counter-offer", "muted"],
 };
 
-const REASON: Record<string, string> = { missing: "missing", damaged: "damaged", wrong_item: "wrong item" };
-
-function RemedyNote({ remedy }: { remedy: RemedyDefault | null }) {
-  if (!remedy)
-    return <p className="caption-plain">No signed remedy schedule applies to this claim, so there is no default split.</p>;
-  return (
-    <div className="notice suggest stack-8">
-      <b>
-        Signed remedy schedule (terms v{remedy.termsVersion}): {money(remedy.toBuyerMinor)} back to the buyer, {money(remedy.toSupplierMinor)} to the
-        supplier
-      </b>
-      <div className="kv">
-        {remedy.basis.map((b, i) => (
-          <div key={i} className="kv-row">
-            <span>
-              {b.description} · {REASON[b.reason]} · {b.refundPercent}% of {money(b.claimedMinor)}
-            </span>
-            <span className="kv-value">{money(b.refundMinor)}</span>
-          </div>
-        ))}
-      </div>
-      <span className="note">This is the split both parties signed up front. It is the default offer, not an automatic payout: both still sign the settlement.</span>
-    </div>
-  );
-}
-
-function OfferView({
-  offer,
-  label,
-  past,
-  remedy = null,
-  children,
-}: {
-  offer: AgreementOffer;
-  label?: string;
-  past?: boolean;
-  remedy?: RemedyDefault | null;
-  children?: ReactNode;
-}) {
+function OfferView({ offer, label, past, children }: { offer: AgreementOffer; label?: string; past?: boolean; children?: ReactNode }) {
   const [text, tone] = STATUS_PILL[offer.status];
-  const under = belowRemedy(offer.toBuyerMinor, remedy);
   return (
     <div className={past ? "offer past" : "offer"}>
       <div className="row between wrap">
@@ -544,11 +502,6 @@ function OfferView({
           <span className="tint-value">{money(offer.toBuyerMinor)}</span>
         </div>
       </div>
-      {under !== null && (
-        <p className="warn-text">
-          Refunds {money(under)} less than the signed remedy schedule (terms v{remedy!.termsVersion}).
-        </p>
-      )}
       {children}
     </div>
   );
@@ -562,25 +515,19 @@ const KINDS: { id: AgreementOfferKind; desc: string }[] = [
 
 function OfferForm({
   held,
-  remedy,
   counterOf,
   busy,
   onSend,
   onCancel,
 }: {
   held: number;
-  remedy: RemedyDefault | null;
   counterOf: AgreementOffer | null;
   busy: boolean;
   onSend: (kind: AgreementOfferKind, toSupplierMinor: number, toBuyerMinor: number) => void;
   onCancel?: () => void;
 }) {
-  // Start from the signed remedy schedule when there is one (and it splits exactly what's held).
-  const fromRemedy = remedy && remedy.toBuyerMinor + remedy.toSupplierMinor === held ? remedy : null;
-  const [kind, setKind] = useState<AgreementOfferKind>(() =>
-    !fromRemedy || fromRemedy.toSupplierMinor === 0 ? "full_refund" : fromRemedy.toBuyerMinor === 0 ? "full_release" : "split",
-  );
-  const [supText, setSupText] = useState(() => ((fromRemedy?.toSupplierMinor ?? Math.floor(held / 2)) / 100).toFixed(2));
+  const [kind, setKind] = useState<AgreementOfferKind>("full_refund");
+  const [supText, setSupText] = useState(() => (Math.floor(held / 2) / 100).toFixed(2));
   const supMinor = kind === "split" ? parseAmountToMinor(supText) : 0;
   const split = supMinor === null ? null : splitFor(kind, held, supMinor);
   const err = supMinor === null ? "Enter an amount like 5.00." : split ? offerError(kind, held, split.toSupplierMinor, split.toBuyerMinor) : null;
@@ -622,10 +569,6 @@ function OfferForm({
           );
         })}
       </div>
-      {fromRemedy && <p className="note">Pre-filled from the signed remedy schedule (terms v{fromRemedy.termsVersion}).</p>}
-      {split && belowRemedy(split.toBuyerMinor, remedy) !== null && (
-        <p className="warn-text">This refunds {money(belowRemedy(split.toBuyerMinor, remedy)!)} less than the signed remedy schedule. The other party will see that.</p>
-      )}
       {err && <p className="warn-text">{err}</p>}
       <div className="row wrap">
         <button className="primary" disabled={busy || !!err || !split} onClick={() => split && onSend(kind, split.toSupplierMinor, split.toBuyerMinor)}>

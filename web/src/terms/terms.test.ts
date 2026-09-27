@@ -44,7 +44,7 @@ test("the draft starts from the purchase order, or the current version when ther
 
 test("draft lines parse into whole cents; bad input is refused with the line number", () => {
   const ok = parseDraft([{ sku: null, description: "Beans", quantity: "3", unitPrice: "10.5" }], "72");
-  assert.deepEqual(ok, { lines: [{ sku: null, description: "Beans", quantity: 3, unitPriceMinor: 1050 }], inspectionHours: 72, remedies: { missing: 100, damaged: 100, wrong_item: 100 } });
+  assert.deepEqual(ok, { lines: [{ sku: null, description: "Beans", quantity: 3, unitPriceMinor: 1050 }], inspectionHours: 72 });
   for (const [q, p, h] of [["0", "1", "72"], ["1.5", "1", "72"], ["1", "1.005", "72"], ["1", "1", "0"], ["1", "1", "721"]])
     assert.ok("error" in parseDraft([{ sku: null, description: "Beans", quantity: q, unitPrice: p }], h), `${q} ${p} ${h}`);
 });
@@ -68,14 +68,4 @@ test("only the shown terms, hash-checked, are signed, and only by that party's w
 test("funding uses the agreed total; no simulated 'both signed' event is seeded", () => {
   assert.deepEqual(fundRequest(4250, "PO-QA-T1", 3).chain, { action: "fund", amount: 4250 });
   assert.ok(!initialState(null).events.some((e) => RETIRED_EVENTS.includes(e.label)));
-});
-
-test("the remedy schedule is parsed as whole percents 0–100 and defaults to 100/100/100", () => {
-  const line = [{ sku: null, description: "Red Bull 8.4 oz", quantity: "24", unitPrice: "2.50" }];
-  const ok = parseDraft(line, "72", { missing: "100", damaged: "50", wrong_item: "0" });
-  assert.ok(!("error" in ok));
-  assert.deepEqual(ok.remedies, { missing: 100, damaged: 50, wrong_item: 0 });
-  const def = parseDraft(line, "72");
-  assert.ok(!("error" in def) && def.remedies.missing === 100 && def.remedies.damaged === 100);
-  for (const bad of ["101", "12.5", "-1", ""]) assert.ok("error" in parseDraft(line, "72", { missing: "100", damaged: bad, wrong_item: "100" }), bad);
 });

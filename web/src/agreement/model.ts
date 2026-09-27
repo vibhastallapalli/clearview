@@ -1,4 +1,4 @@
-import type { EscrowRecord, RemedyDefault } from "@cleardock/shared";
+import type { EscrowRecord } from "@cleardock/shared";
 import { money } from "../api";
 import type { AgreementOffer, AgreementOfferKind, AgreementState, AgreementWrite, Party, SettlementStatus } from "./contract";
 
@@ -46,10 +46,6 @@ export function offerError(kind: AgreementOfferKind, held: number, toSupplierMin
     return "A split gives both sides something. Use full refund or full release instead.";
   return null;
 }
-
-/** How much less than the signed remedy schedule an offer refunds, or null if it meets it (or there is no schedule). */
-export const belowRemedy = (toBuyerMinor: number, remedy: RemedyDefault | null) =>
-  remedy && toBuyerMinor < remedy.toBuyerMinor ? remedy.toBuyerMinor - toBuyerMinor : null;
 
 export const currentOffer = (st: AgreementState): AgreementOffer | null =>
   st.offers.find((o) => o.id === st.currentOfferId) ?? null;
