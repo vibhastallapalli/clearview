@@ -8,6 +8,7 @@ import type {
   Order,
   OrderDetail,
   PhoneProof,
+  PhoneProofView,
   ScanResult,
   Supplier,
 } from "@cleardock/shared";
@@ -124,6 +125,16 @@ export function resetDb(): Order {
   return fresh.orders[0];
 }
 
+/**
+ * A proof as served. Proofs saved before phone photos stopped being AI-assessed may still hold an
+ * `assessment` on disk: it is kept there but never served, so no AI verdict appears next to a photo.
+ * They also predate `kind`, so they are served as uploads.
+ */
+function publicProof(p: PhoneProof, capture: Capture): PhoneProofView {
+  const { id, orderId, captureId, imageSha256, stationScanId, stationCaptureId, evidenceRevision, createdAt } = p;
+  return { id, orderId, captureId, imageSha256, kind: p.kind === "live" ? "live" : "upload", stationScanId, stationCaptureId, evidenceRevision, createdAt, capture };
+}
+
 /** OrderDetail for any route. Proofs are newest first, each with its photo. */
 export function orderDetail(order: Order): OrderDetail {
   return {
@@ -134,7 +145,7 @@ export function orderDetail(order: Order): OrderDetail {
     latestScan: db.scans.find((s) => s.id === order.latestScanId) ?? null,
     proofs: db.proofs
       .filter((p) => p.orderId === order.id)
-      .map((p) => ({ ...p, capture: db.captures.find((c) => c.id === p.captureId)! }))
+      .map((p) => publicProof(p, db.captures.find((c) => c.id === p.captureId)!))
       .reverse(),
   };
 }

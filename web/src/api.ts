@@ -52,11 +52,12 @@ export const api = {
       `/api/capture-sessions/${code}`,
     ),
 
-  // Phone photo = proof for the current station scan. Never replaces the station result. 409 before any station scan.
-  submitCapture: (code: string, image: Blob, mockScenario?: string) => {
+  // Phone photo = raw proof for the current station scan, for the supplier. No AI reads it; it never replaces
+  // the station result. "live" only for in-app camera snapshots; picked files are "upload". 409 before any station scan.
+  submitCapture: (code: string, image: Blob, kind: "live" | "upload") => {
     const fd = new FormData();
     fd.append("image", image, "capture.jpg");
-    if (mockScenario) fd.append("mockScenario", mockScenario);
+    fd.append("kind", kind);
     return request<{ capture: Capture; proof: PhoneProof; order: OrderDetail }>(`/api/capture-sessions/${code}/captures`, {
       method: "POST",
       body: fd,

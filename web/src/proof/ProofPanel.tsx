@@ -1,20 +1,15 @@
 import { useState } from "react";
 import QRCode from "qrcode";
-import type { OrderDetail, PhoneProofView, ProofFinding } from "@cleardock/shared";
+import type { OrderDetail, PhoneProofView } from "@cleardock/shared";
 import { api } from "../api";
-import { proofDisplay } from "./proofState";
-
-const PHOTO: Record<ProofFinding["photo"], string> = {
-  supports: "photo supports",
-  contradicts: "photo contradicts",
-  not_visible: "not visible in photo",
-};
+import { isHistorical, splitProofs } from "./proofState";
 
 const time = (iso: string) => new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
 
 /**
- * Buyer phone photos attached as proof to the station result. Same data for buyer and supplier
- * (GET /orders/:id). Proof never changes the station report, the amounts or any escrow step.
+ * Buyer photos attached as proof to the station result, for the supplier to judge. Same data for buyer
+ * and supplier (GET /orders/:id). No AI reads them. Live in-app photos and uploaded files are shown
+ * apart. Proof never changes the station report, the amounts or any escrow step.
  */
 export function ProofPanel({ detail, role }: { detail: OrderDetail; role: "buyer" | "supplier" }) {
   const [qr, setQr] = useState<{ img: string; url: string } | null>(null);
@@ -36,6 +31,7 @@ export function ProofPanel({ detail, role }: { detail: OrderDetail; role: "buyer
   const { order, proofs, latestCapture } = detail;
   const hasStationScan = latestCapture?.source === "station" && !!order.comparison;
   const isBuyer = role === "buyer";
+  const { live, uploads } = splitProofs(proofs);
 
   const openQr = async () => {
     setOpening(true);
@@ -62,8 +58,8 @@ export function ProofPanel({ detail, role }: { detail: OrderDetail; role: "buyer
       </div>
       <p className="note">
         {isBuyer
-          ? "Photos from your phone back up the station report for you and the supplier. They don't change the station report, the amounts or the escrow."
-          : "Photos the buyer took to back up the station report. They don't change the station report, the amounts or the escrow."}
+          ? "Photos go to the supplier as proof of what arrived. No AI checks or labels them. They don't change the station report, the amounts or the escrow."
+          : "Photos the buyer sent as proof of what arrived. No AI checks or labels them: judge them yourself. They don't change the station report, the amounts or the escrow."}
       </p>
       {isBuyer && hasStationScan && (
         <div className="row wrap gap-6">
@@ -101,73 +97,53 @@ export function ProofPanel({ detail, role }: { detail: OrderDetail; role: "buyer
           </p>
         </div>
       )}
-      {proofs.map((p) => (
-        <ProofItem key={p.id} proof={p} latestScanId={order.latestScanId} isBuyer={isBuyer} onRetry={openQr} />
-      ))}
+      <ProofGroup
+        title="Live photos"
+        note="Taken with the in-app camera at the time of upload, as reported by the capture page."
+        proofs={live}
+        latestScanId={order.latestScanId}
+      />
+      <ProofGroup
+        title="Additional evidence · uploaded files"
+        note="Picked from the buyer's device. Could be any image: not a live photo."
+        proofs={uploads}
+        latestScanId={order.latestScanId}
+      />
     </section>
   );
 }
 
-function ProofItem({ proof, latestScanId, isBuyer, onRetry }: { proof: PhoneProofView; latestScanId: string | null; isBuyer: boolean; onRetry: () => void }) {
-  const d = proofDisplay(proof, latestScanId, Date.now());
-  const a = proof.assessment;
+function ProofGroup({ title, note, proofs, latestScanId }: { title: string; note: string; proofs: PhoneProofView[]; latestScanId: string | null }) {
+  if (!proofs.length) return null;
   return (
-    <article className={d.historical ? "proof historical" : "proof"}>
+    <div className="stack-8">
+      <span className="eyebrow">
+        {title} · {proofs.length}
+      </span>
+      <p className="note">{note}</p>
+      {proofs.map((p) => (
+        <ProofItem key={p.id} proof={p} historical={isHistorical(p, latestScanId)} />
+      ))}
+    </div>
+  );
+}
+
+function ProofItem({ proof, historical }: { proof: PhoneProofView; historical: boolean }) {
+  const live = proof.kind === "live";
+  return (
+    <article className={historical ? "proof historical" : "proof"}>
       <a className="proof-photo" href={proof.capture.imageUrl} target="_blank" rel="noreferrer">
-        <img src={proof.capture.imageUrl} alt={`Phone photo proof taken ${time(proof.createdAt)}`} />
+        <img src={proof.capture.imageUrl} alt={`${live ? "Live photo" : "Uploaded file"} sent ${time(proof.createdAt)}`} />
       </a>
       <div className="proof-body">
         <div className="row wrap gap-6">
-          <span className={`pill ${d.tone} pill-xs`}>
-            {d.state === "pending" && <span className="spinner spinner-xs" aria-hidden="true" />}
-            {d.label}
-          </span>
-          {d.mock && <span className="sim">MOCK AI</span>}
+          <span className={`pill ${live ? "info" : "warn"} pill-xs`}>{live ? "Live photo" : "Uploaded file"}</span>
           {proof.capture.fixture && <span className="sim">SAMPLE PHOTO · SIMULATED</span>}
-          {d.historical && <span className="pill muted pill-xs">Historical · earlier station scan</span>}
-          <span className="pill muted pill-xs">AI assessment · evidence only</span>
+          {historical && <span className="pill muted pill-xs">Historical · earlier station scan</span>}
         </div>
-        {d.state === "pending" && <p className="small">Photo saved. The server is assessing it against the station scan.</p>}
-        {d.state === "stalled" && (
-          <p className="small">Photo saved, but the assessment never finished (the server may have restarted). Take another photo to try again.</p>
-        )}
-        {d.state === "failed" && (
-          <p className="small">
-            Photo saved; not assessed{a.error ? `: ${a.error}` : "."}
-          </p>
-        )}
-        {a.status === "complete" && <p className="small">{a.summary}</p>}
-        {d.coverage && <p className="small muted">{d.coverage}</p>}
-        {a.findings.length > 0 && (
-          <ul className="small proof-findings">
-            {a.findings.map((f, i) => (
-              <li key={i}>
-                <b>{f.description}</b> · station: {f.stationVerdict.replace("_", " ")} · {PHOTO[f.photo]}
-                {f.note && <> · {f.note}</>}
-              </li>
-            ))}
-          </ul>
-        )}
-        {a.observed.length > 0 && (
-          <p className="small">
-            <b>In this photo:</b> {a.observed.map((o) => `${o.count} × ${o.labelText}`).join(", ")}
-          </p>
-        )}
-        {a.untrustedText.length > 0 && (
-          <p className="small warn-text">
-            Text in the photo that reads like an instruction (recorded, ignored): {a.untrustedText.map((t) => `“${t}”`).join(", ")}
-          </p>
-        )}
-        {isBuyer && d.canRetry && (
-          <button className="secondary sm" onClick={onRetry}>
-            Take another photo
-          </button>
-        )}
         <p className="caption">
-          phone · {time(proof.createdAt)} · sha256 {proof.imageSha256.slice(0, 10)}… · vs station scan {proof.stationScanId} (rev{" "}
+          {time(proof.createdAt)} · sha256 {proof.imageSha256.slice(0, 10)}… · for station scan {proof.stationScanId} (rev{" "}
           {proof.evidenceRevision})
-          {a.assessedAt && ` · assessed ${time(a.assessedAt)}`}
-          {a.analyzedBy && ` · ${a.analyzedBy}${a.model ? ` ${a.model}` : ""}`}
         </p>
       </div>
     </article>

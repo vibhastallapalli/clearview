@@ -15,6 +15,7 @@ import {
   type Order,
   type OrderDetail,
   type PhoneProof,
+  type ProofKind,
   type SensorReading,
 } from "@cleardock/shared";
 import { Connection } from "@solana/web3.js";
@@ -30,7 +31,6 @@ import {
   type PaymentCtx,
 } from "./solana/payments.ts";
 import { escrowRouter } from "./escrow.ts";
-import { assessPhoneProof } from "./proof.ts";
 import { configuredMint, isValidAmount, isWallet, publicConfig, rpcUrl } from "./solana/tx.ts";
 import { analyzeDocument, analyzeScan, type MockScenario } from "./ai/analyze.ts";
 import { geminiEnabled } from "./ai/gemini.ts";
@@ -172,17 +172,17 @@ function saveCapture(args: { order: Order; source: CaptureSource; sessionId: str
 }
 
 /**
- * Phone photo = proof for the current station result. Never changes latestScanId, the comparison,
- * evidenceRevision, status, approval, payment or escrow, so it is allowed after payment too.
+ * Phone photo = raw proof for the current station result, for the supplier to judge. No AI reads it.
+ * Never changes latestScanId, the comparison, evidenceRevision, status, approval, payment or escrow,
+ * so it is allowed after payment too.
  */
-async function attachPhoneProof(args: { order: Order; sessionId: string | null; file: Express.Multer.File; mockScenario?: MockScenario; fixture?: string | null }) {
+function attachPhoneProof(args: { order: Order; sessionId: string | null; file: Express.Multer.File; kind: ProofKind; fixture?: string | null }) {
   const { order, file } = args;
   if (!file.mimetype.startsWith("image/")) throw new HttpError(400, "bad_request", "Capture must be an image");
   const stationScan = db.scans.find((s) => s.id === order.latestScanId);
   const stationCapture = db.captures.find((c) => c.id === stationScan?.captureId);
   if (!stationScan || stationCapture?.source !== "station" || !order.comparison)
     throw new HttpError(409, "conflict", "No station scan yet. Phone photos are proof for a station result; scan the delivery at the station first.");
-  const comparison = order.comparison;
 
   const capture = saveCapture({ order, source: "phone", sessionId: args.sessionId, file, sensors: [], fixture: args.fixture });
   const proof: PhoneProof = {
@@ -190,27 +190,13 @@ async function attachPhoneProof(args: { order: Order; sessionId: string | null; 
     orderId: order.id,
     captureId: capture.id,
     imageSha256: capture.imageSha256,
+    kind: args.kind,
     stationScanId: stationScan.id,
     stationCaptureId: stationCapture.id,
     evidenceRevision: order.evidenceRevision,
-    assessment: {
-      status: "pending", verdict: null, coverage: null, findings: [], observed: [], untrustedText: [],
-      summary: "Assessing the photo…", analyzedBy: null, model: null, error: null, assessedAt: null,
-    },
     createdAt: now(),
   };
   db.proofs.push(proof);
-  save();
-
-  try {
-    const out = await assessPhoneProof({
-      proofId: proof.id, captureId: capture.id, image: file.buffer, mimeType: file.mimetype,
-      stationScan, comparison, mockScenario: args.mockScenario,
-    });
-    proof.assessment = { ...proof.assessment, ...out, status: "complete", error: null, assessedAt: now() };
-  } catch (err) {
-    proof.assessment = { ...proof.assessment, status: "failed", summary: "Photo saved; not assessed.", error: (err as Error).message, assessedAt: now() };
-  }
   save();
   return { capture, proof, order: detail(order) };
 }
@@ -321,11 +307,12 @@ app.post(
   wrap(async (req, res) => {
     const session = getSession(req.params.code);
     if (!req.file) throw new HttpError(400, "bad_request", "image is required");
-    const result = await attachPhoneProof({
+    const result = attachPhoneProof({
       order: getOrder(session.orderId),
       sessionId: session.id,
       file: req.file,
-      mockScenario: req.body.mockScenario,
+      // Only the in-app camera may claim "live"; anything else is additional evidence.
+      kind: req.body.kind === "live" ? "live" : "upload",
     });
     res.status(201).json(result);
   }),
@@ -467,8 +454,8 @@ app.use(escrowRouter);
 
 // ---------- dev ----------
 
-// Test aid: attach a synthetic tray photo as phone proof, labelled as a fixture so the UI shows SIMULATED.
-// The photo is fake; its assessment is whatever the configured AI (live Gemini or mock) says about it.
+// Test aid: attach a synthetic tray photo as additional evidence ("upload"), labelled as a fixture so
+// the UI shows SIMULATED. Like /dev/reset, this must not be exposed in a real deployment.
 const SAMPLE_PROOFS = ["all_correct", "one_missing", "swapped", "label_covered"];
 app.post(
   "/api/dev/orders/:id/sample-proof",
@@ -477,10 +464,11 @@ app.post(
     if (!SAMPLE_PROOFS.includes(sample)) throw new HttpError(400, "bad_request", `sample must be one of ${SAMPLE_PROOFS.join(", ")}`);
     const fixture = `samples/photos/synthetic/${sample}.jpg`;
     const buffer = readFileSync(fileURLToPath(new URL(`../../${fixture}`, import.meta.url)));
-    const result = await attachPhoneProof({
+    const result = attachPhoneProof({
       order: getOrder(req.params.id),
       sessionId: null,
       file: { buffer, mimetype: "image/jpeg" } as Express.Multer.File,
+      kind: "upload",
       fixture,
     });
     res.status(201).json(result);
