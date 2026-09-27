@@ -56,7 +56,7 @@ export interface OrderTermsRecord {
 }
 
 /** An agreement plus the signed writes applied at each revision (so a retried write is recognised, not re-applied). */
-export type AgreementRecord = AgreementState & { log: { revision: number; key: string }[] };
+export type AgreementRecord = Omit<AgreementState, "remedy"> & { log: { revision: number; key: string }[] };
 
 mkdirSync(UPLOAD_DIR, { recursive: true });
 

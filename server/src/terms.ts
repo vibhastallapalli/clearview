@@ -1,5 +1,7 @@
 import { Router, type NextFunction, type Request, type Response } from "express";
 import {
+  DEFAULT_REMEDIES,
+  REMEDY_ISSUES,
   ORDER_TERMS_RULES,
   ORDER_TERMS_RULES_VERSION,
   orderTermsMessage,
@@ -11,6 +13,7 @@ import {
   type OrderTermsState,
   type OrderTermsVersion,
   type Party,
+  type RemedySchedule,
   type TermsPreview,
 } from "@cleardock/shared";
 import { db, save, type OrderTermsRecord } from "./store.ts";
@@ -72,7 +75,13 @@ function staleReason(order: Order, t: OrderTerms): string | null {
   return changed.length ? `Changed since these terms were proposed: ${changed.join(", ")}. Propose the terms again.` : null;
 }
 
-function buildTerms(order: Order, rawLines: unknown, rawHours: unknown): OrderTerms {
+function remedies(raw: unknown): RemedySchedule {
+  if (raw === undefined || raw === null) return { ...DEFAULT_REMEDIES };
+  const r = raw as Record<string, unknown>;
+  return Object.fromEntries(REMEDY_ISSUES.map((i) => [i, int(r[i], `remedies.${i} (refund percent)`, 0, 100)])) as RemedySchedule;
+}
+
+function buildTerms(order: Order, rawLines: unknown, rawHours: unknown, rawRemedies: unknown): OrderTerms {
   if (!Array.isArray(rawLines) || rawLines.length < 1 || rawLines.length > 50) throw bad("lines must list 1 to 50 order lines");
   const lines: OrderTermsLine[] = rawLines.map((raw, i) => {
     const l = (raw ?? {}) as Record<string, unknown>;
@@ -93,6 +102,7 @@ function buildTerms(order: Order, rawLines: unknown, rawHours: unknown): OrderTe
     lines,
     totalMinor,
     inspection: { hours: int(rawHours, "inspectionHours", 1, 720), startsAt: "first_station_scan_after_funding", enforced: false },
+    remedies: remedies(rawRemedies),
     rules: [...ORDER_TERMS_RULES],
   };
 }
@@ -142,7 +152,7 @@ function assertOpen(order: Order, rec: OrderTermsRecord) {
 }
 
 async function preview(order: Order, body: Record<string, unknown>): Promise<TermsPreview> {
-  const terms = buildTerms(order, body.lines, body.inspectionHours);
+  const terms = buildTerms(order, body.lines, body.inspectionHours, body.remedies);
   const termsHash = await termsHashOf(terms);
   return { version: record(order.id).versions.length + 1, terms, termsHash };
 }
@@ -150,7 +160,7 @@ async function preview(order: Order, body: Record<string, unknown>): Promise<Ter
 async function propose(order: Order, body: Record<string, unknown>): Promise<OrderTermsState> {
   const as = party(body.as);
   const expectedRevision = int(body.expectedRevision, "expectedRevision", 0);
-  const terms = buildTerms(order, body.lines, body.inspectionHours);
+  const terms = buildTerms(order, body.lines, body.inspectionHours, body.remedies);
   const termsHash = await termsHashOf(terms);
 
   const rec = record(order.id);
@@ -216,6 +226,12 @@ export function assertFundingMatchesTerms(order: Order, chain: DecodedEscrow) {
     chain.supplier !== t.terms.supplierWallet && "supplier",
   ].filter(Boolean);
   if (mismatch.length) throw conflict(`The escrow on devnet doesn't match the agreed terms v${t.version} (${mismatch.join(", ")}). ClearDock won't link it.`);
+}
+
+/** The version an order's escrow was funded with, or null (not funded, or legacy). */
+export function fundedTerms(orderId: string): OrderTermsVersion | null {
+  const rec = db.orderTerms.find((r) => r.orderId === orderId);
+  return rec?.funded ? (rec.versions.find((v) => v.termsHash === rec.funded!.termsHash) ?? null) : null;
 }
 
 export function markFunded(order: Order, escrowAddress: string) {

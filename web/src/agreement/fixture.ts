@@ -41,7 +41,7 @@ export class SimulatedAgreementApi implements AgreementApi {
   private rec(orderId: string): Rec {
     let r = this.recs.get(orderId);
     if (!r) {
-      r = { st: { orderId, revision: 0, claim: null, offers: [], currentOfferId: null, nextActor: null, settlement: null }, log: [] };
+      r = { st: { orderId, revision: 0, claim: null, offers: [], currentOfferId: null, nextActor: null, settlement: null, remedy: null }, log: [] };
       this.recs.set(orderId, r);
     }
     return r;

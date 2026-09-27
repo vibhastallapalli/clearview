@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { ORDER_TERMS_RULES, orderTermsMessage, termsHashOf, type ExtractedDocument, type OrderTerms, type OrderTermsState } from "@cleardock/shared";
+import { DEFAULT_REMEDIES, ORDER_TERMS_RULES, orderTermsMessage, termsHashOf, type ExtractedDocument, type OrderTerms, type OrderTermsState } from "@cleardock/shared";
 import { RETIRED_EVENTS, fundRequest, initialState } from "../escrow/demo";
 import { fundingBlock, initialDraft, parseDraft, termsToSign } from "./terms";
 
 const terms = (over: Partial<OrderTerms> = {}): OrderTerms => ({
-  rulesVersion: 1,
+  rulesVersion: 2,
+  remedies: { ...DEFAULT_REMEDIES },
   orderId: "ord_terms_qa",
   reference: "PO-QA-T1",
   network: "devnet",

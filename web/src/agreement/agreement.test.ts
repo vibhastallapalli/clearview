@@ -294,7 +294,7 @@ test("error classes: unavailable server, conflicts, wrong wallet, gateway errors
   const s = new AgreementSession(missing, ORDER, device("buyer"));
   await s.refresh();
   assert.equal(s.status, "unavailable");
-  s.state = { orderId: ORDER, revision: 1, claim: null, offers: [], currentOfferId: null, nextActor: null, settlement: null };
+  s.state = { orderId: ORDER, revision: 1, claim: null, offers: [], currentOfferId: null, nextActor: null, settlement: null, remedy: null };
   await s.propose("buyer", "full_refund", 0, 1000);
   assert.equal(s.notice?.text, UNAVAILABLE);
 });

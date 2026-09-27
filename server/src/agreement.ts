@@ -3,6 +3,7 @@ import { Router, type NextFunction, type Request, type Response } from "express"
 import { PublicKey } from "@solana/web3.js";
 import {
   agreementMessage,
+  remedyDefault,
   type AgreementOffer,
   type AgreementOfferKind,
   type AgreementState,
@@ -16,6 +17,7 @@ import {
 import { db, save, type AgreementRecord } from "./store.ts";
 import { applyEscrowEvent, assertBelongsToOrder, EscrowRouteError, readEscrow, rpc, type RpcTransaction } from "./escrow.ts";
 import { HttpError } from "./solana/payments.ts";
+import { fundedTerms } from "./terms.ts";
 
 // Negotiating the held (claimed) escrow amount. See "Agreement" in CONTRACTS.md.
 // Every check-and-write below runs synchronously (no await between reading the revision and saving),
@@ -93,7 +95,11 @@ function view(rec: AgreementRecord): AgreementState {
   // The claim's own scan (never a newer one) and its photo. Scans and captures are never edited.
   const scan = rec.claim && db.scans.find((s) => s.id === rec.claim!.scanId);
   const stationCapture = (scan && db.captures.find((c) => c.id === scan.captureId)) ?? null;
-  return { ...state, claim: rec.claim && { ...rec.claim, stationCapture }, nextActor: rec.claim?.status === "filed" && cur?.status === "open" ? OTHER[cur.proposedBy] : null };
+  // The signed remedy schedule's split for the filed claim. None for legacy orders, or terms signed before schedules existed.
+  const terms = fundedTerms(rec.orderId);
+  const remedy =
+    terms?.terms.remedies && rec.claim?.status === "filed" ? remedyDefault(rec.claim.lines, rec.claim.chain!.heldMinor, terms.terms.remedies, terms.version) : null;
+  return { ...state, remedy, claim: rec.claim && { ...rec.claim, stationCapture }, nextActor: rec.claim?.status === "filed" && cur?.status === "open" ? OTHER[cur.proposedBy] : null };
 }
 
 /**

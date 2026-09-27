@@ -363,7 +363,7 @@ export interface ClaimLine {
 // funds can only leave through the program's normal instructions. The inspection window is informational.
 
 /** Bump when ORDER_TERMS_RULES changes. */
-export const ORDER_TERMS_RULES_VERSION = 1;
+export const ORDER_TERMS_RULES_VERSION = 2;
 
 /** The rules every order agrees to. Only what the app and program actually do. */
 export const ORDER_TERMS_RULES: readonly string[] = [
@@ -372,6 +372,8 @@ export const ORDER_TERMS_RULES: readonly string[] = [
   "Claims: amounts the buyer claims stay held in escrow. They leave only through one settle transaction signed by both buyer and supplier for an exact split of the held amount.",
   "No timeout: nothing is released or refunded automatically, including when the inspection window ends. The window is not enforced in this version.",
   "No arbitration: if buyer and supplier don't agree, the held amount stays in escrow. ClearDock never decides who is right.",
+  "Remedies: for each claimed line, the remedy schedule below sets the agreed refund, as a percentage of that line's price. It is the default settlement offer. Moving held money still needs both signatures; an offer that refunds less than the schedule is shown as departing from these signed terms.",
+  "Non-delivery: if nothing arrives, the buyer claims every line as missing and the schedule applies. Nothing is refunded without the supplier's signature.",
   "Evidence: station scans and photos are evidence for both sides to review, not verdicts. AI output never moves money.",
 ];
 
@@ -380,6 +382,39 @@ export interface OrderTermsLine {
   description: string;
   quantity: number;
   unitPriceMinor: number;
+}
+
+/** Issues a remedy can be agreed for. A claim line's reason picks its rule; "other" has no scheduled remedy. */
+export type RemedyIssue = "missing" | "damaged" | "wrong_item";
+export const REMEDY_ISSUES: readonly RemedyIssue[] = ["missing", "damaged", "wrong_item"];
+
+/** Whole-percent refund of a claimed line's price, per issue, agreed before funding. */
+export type RemedySchedule = Record<RemedyIssue, number>;
+export const DEFAULT_REMEDIES: RemedySchedule = { missing: 100, damaged: 100, wrong_item: 100 };
+
+/** The default split of a held claim under the signed schedule. */
+export interface RemedyDefault {
+  /** Terms version whose schedule this comes from. */
+  termsVersion: number;
+  toBuyerMinor: number;
+  toSupplierMinor: number;
+  basis: { description: string; reason: RemedyIssue; claimedMinor: number; refundPercent: number; refundMinor: number }[];
+}
+
+/**
+ * The schedule's split for claimed lines, or null if any line has no scheduled remedy (reason "other").
+ * Per line: floor(claimedMinor × percent / 100), in integer cents; the remainder goes to the supplier.
+ */
+export function remedyDefault(lines: ClaimLine[], heldMinor: number, schedule: RemedySchedule, termsVersion: number): RemedyDefault | null {
+  if (lines.some((l) => l.reason === "other")) return null;
+  const basis = lines.map((l) => {
+    const reason = l.reason as RemedyIssue;
+    const refundPercent = schedule[reason];
+    return { description: l.description, reason, claimedMinor: l.claimedMinor, refundPercent, refundMinor: Math.floor((l.claimedMinor * refundPercent) / 100) };
+  });
+  const toBuyerMinor = basis.reduce((sum, b) => sum + b.refundMinor, 0);
+  if (toBuyerMinor > heldMinor) return null;
+  return { termsVersion, toBuyerMinor, toSupplierMinor: heldMinor - toBuyerMinor, basis };
 }
 
 /** The canonical terms. Every field is material: changing any of them is a new version. */
@@ -403,6 +438,8 @@ export interface OrderTerms {
     /** Nothing enforces the deadline, on-chain or in the app. */
     enforced: false;
   };
+  /** What the buyer gets back per claimed issue. */
+  remedies: RemedySchedule;
   rules: string[];
 }
 
@@ -454,6 +491,8 @@ export interface ProposeTermsInput {
   expectedRevision: number;
   lines: OrderTermsLine[];
   inspectionHours: number;
+  /** Omitted = DEFAULT_REMEDIES (shown in the preview, so it is still what gets signed). */
+  remedies?: RemedySchedule;
   walletSignature: string;
 }
 
@@ -486,6 +525,7 @@ export function canonicalTerms(t: OrderTerms): string {
     t.lines.map((l) => [l.sku, l.description, l.quantity, l.unitPriceMinor]),
     t.totalMinor,
     [t.inspection.hours, t.inspection.startsAt, t.inspection.enforced],
+    REMEDY_ISSUES.map((i) => [i, t.remedies[i]]),
     t.rules,
   ]);
 }
@@ -509,6 +549,7 @@ export function orderTermsMessage(orderId: string, version: number, termsHash: s
     `buyer: ${t.buyerWallet}`,
     `supplier: ${t.supplierWallet}`,
     `inspection: ${t.inspection.hours} h from the first station scan after funding (not enforced)`,
+    `remedies (refund of the claimed line's price): missing ${t.remedies.missing}%, damaged ${t.remedies.damaged}%, wrong item ${t.remedies.wrong_item}%`,
     "claimed amounts stay held until both sign a settlement; no timeout, no arbitration",
   ].join("\n");
 }
@@ -635,6 +676,8 @@ export interface AgreementState {
   /** Who must act next. Null when either may (filed claim, no open offer) or nobody (no filed claim, agreed). */
   nextActor: Party | null;
   settlement: AgreementSettlement | null;
+  /** The signed remedy schedule's split for the filed claim. Null without a filed claim, funded terms (legacy) or a scheduled reason. */
+  remedy: RemedyDefault | null;
 }
 
 /** What a party signs and POSTs. The request body is the write plus `walletSignature` (base64 ed25519). */

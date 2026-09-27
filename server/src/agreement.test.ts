@@ -54,12 +54,12 @@ const chain = {
   seen: new Set<string>(),
   height: 0,
   /** The fresh order's escrow on chain, once the buyer funds it. */
-  escrow2: null as null | { total: number; termsHash: string },
+  escrow2: null as null | { total: number; termsHash: string; released?: number; claimed?: number; status?: number },
 };
 
 function escrowData(address: string) {
   const fresh = address === ESCROW2 && chain.escrow2;
-  const e = fresh ? { total: fresh.total, released: 0, claimed: 0, refunded: 0, status: STATUS.funded } : chain.escrow;
+  const e = fresh ? { total: fresh.total, released: fresh.released ?? 0, claimed: fresh.claimed ?? 0, refunded: 0, status: fresh.status ?? STATUS.funded } : chain.escrow;
   const b = Buffer.alloc(234);
   createHash("sha256").update("account:Escrow").digest().copy(b, 0, 0, 8);
   [buyer.pk, supplier.pk, MINT, VAULT].forEach((k, i) => k.toBuffer().copy(b, 8 + 32 * i));
@@ -129,7 +129,7 @@ function seedDb(dataDir: string) {
   const proof = { id: "prf_1", orderId: OID, captureId: "cap_p", imageSha256: "0", kind: "live", stationScanId: "scan_old", stationCaptureId: "cap_1", evidenceRevision: 2, createdAt: t };
   const fresh = { ...order, id: OID2, reference: REF2, status: "needs_documents", evidenceRevision: 0, latestCaptureId: null, latestScanId: null, escrow: null };
   writeFileSync(join(dataDir, "db.json"), JSON.stringify({
-    suppliers: [sup], orders: [order, fresh], documents: [], sessions: [], captures: [capture("cap_1"), capture("cap_2")], scans: [scan("scan_old"), scan("scan_new")],
+    suppliers: [sup], orders: [order, fresh], documents: [], sessions: [], captures: [capture("cap_1"), capture("cap_2")], scans: [scan("scan_old"), scan("scan_new"), { ...scan("scan_fresh"), orderId: OID2 }],
     proofs: [proof], paymentAttempts: [], archivedOrders: [], agreements: [],
   }));
 }
@@ -210,7 +210,7 @@ before(async () => {
 
 describe("agreement", () => {
   test("empty agreement for a new order; unknown order is 404", async () => {
-    assert.deepEqual(await get(), { orderId: OID, revision: 0, claim: null, offers: [], currentOfferId: null, nextActor: null, settlement: null });
+    assert.deepEqual(await get(), { orderId: OID, revision: 0, claim: null, offers: [], currentOfferId: null, nextActor: null, settlement: null, remedy: null });
     assert.equal((await fetch(server.base + "/api/orders/nope/agreement")).status, 404);
   });
 
@@ -449,6 +449,14 @@ describe("order terms before funding", () => {
     assert.deepEqual([pv.terms.totalMinor, pv.terms.buyerWallet, pv.terms.supplierWallet, pv.terms.mint, pv.terms.reference], [3000, buyer.address, supplier.address, MINT.toBase58(), REF2]);
     assert.deepEqual(pv.terms.inspection, { hours: 72, startsAt: "first_station_scan_after_funding", enforced: false });
     assert.equal((await tcall("POST", "/preview", { lines: [{ description: "x", quantity: 1.5, unitPriceMinor: 100 }], inspectionHours: 72 })).status, 400);
+    assert.deepEqual(pv.terms.remedies, { missing: 100, damaged: 100, wrong_item: 100 }); // default, shown before signing
+    const bad = (remedies: object) => tcall("POST", "/preview", { lines: termsLines(3), inspectionHours: 72, remedies }).then((x) => x.status);
+    assert.equal(await bad({ missing: 101, damaged: 50, wrong_item: 100 }), 400);
+    assert.equal(await bad({ missing: 100, damaged: 12.5, wrong_item: 100 }), 400);
+    assert.equal(await bad({ missing: 100, damaged: 50 }), 400);
+    const half = (await tcall("POST", "/preview", { lines: termsLines(3), inspectionHours: 72, remedies: { missing: 100, damaged: 50, wrong_item: 100 } })).body as unknown as TermsPreview;
+    assert.notEqual(half.termsHash, pv.termsHash); // the schedule is signed: changing it is different terms
+    assert.match(orderTermsMessage(OID2, half.version, half.termsHash, half.terms), /damaged 50%/);
   });
 
   test("wrong wallets are rejected and one approval can't unlock funding", async () => {
@@ -532,4 +540,35 @@ test("dev-only routes answer local requests but not tunnelled ones", async () =>
   assert.equal(await dev({}), 400); // reached the route (bad sample name)
   assert.equal(await dev({ "cf-connecting-ip": "203.0.113.9" }), 404);
   assert.equal(await dev({ "x-forwarded-for": "203.0.113.9" }), 404);
+});
+
+test("a filed claim on an order funded with signed terms gets the schedule's default split; legacy orders get none", async () => {
+  assert.equal((await get()).remedy, null); // ord_1001: escrow linked before terms existed
+
+  // Continue the funded fresh order: the buyer claims one missing can (1000 held, 1000 released).
+  const terms = (await tcall("GET", "")).body;
+  assert.equal(terms.status, "funded");
+  const claim: ClaimWrite = {
+    action: "prepare_claim", as: "buyer", expectedRevision: 0, scanId: "scan_fresh", evidenceRevision: 0,
+    lines: [{ sku: "A", description: "Product A 500 g", claimedMinor: 1000, reason: "missing" }], claimedMinor: 1000, proofIds: [],
+    decisions: [
+      { description: "Product A 500 g · unit 1", priceMinor: 1000, suggested: "accept", decided: "accept", overrideReason: null },
+      { description: "Product A 500 g", priceMinor: 1000, suggested: "claim", decided: "claim", overrideReason: null },
+    ],
+  };
+  const sig = sign(null, Buffer.from(agreementMessage(OID2, claim)), buyer.key).toString("base64");
+  const at = (path: string, body: object) =>
+    fetch(`${server.base}/api/orders/${OID2}/agreement${path}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+  assert.equal((await at("/claim", { ...claim, walletSignature: sig })).status, 200);
+
+  const claimSig = txSig();
+  chain.txs.set(claimSig, tx("Claim", { escrow: ESCROW2 }));
+  chain.escrow2 = { ...chain.escrow2!, released: 1000, claimed: 1000, status: STATUS.claimed };
+  const filed = await at("/claim/confirm", { claimSignature: claimSig });
+  const st = (await filed.json()) as AgreementState;
+  assert.equal(filed.status, 200, JSON.stringify(st));
+  assert.deepEqual(
+    [st.remedy?.termsVersion, st.remedy?.toBuyerMinor, st.remedy?.toSupplierMinor, st.remedy?.basis[0].refundPercent],
+    [terms.current!.version, 1000, 0, 100],
+  );
 });
