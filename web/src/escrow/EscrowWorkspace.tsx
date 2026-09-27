@@ -8,7 +8,8 @@ import {
   OFFERS,
   PARTY,
   acceptRequest,
-  claimRequest,
+  linesStale,
+  reviewedClaim,
   claimedOf,
   fundRequest,
   historyFor,
@@ -219,7 +220,21 @@ export function EscrowWorkspace({ detail }: { detail: OrderDetail }) {
             </section>
           )}
 
-          {st.step === "report" && isBuyer && (
+          {st.step === "report" && isBuyer && linesStale(st, detail) && (
+            <section className="card">
+              <span className="eyebrow">Step 2 · Accept or claim</span>
+              <p className="error">
+                The station scanned this delivery again (scan {detail.order.latestScanId}, revision{" "}
+                {detail.order.evidenceRevision}). Your earlier accept/claim choices were based on the previous scan and
+                have been set aside. Review the new report before signing anything.
+              </p>
+              <button className="primary" onClick={() => update(orderId, (s) => scanned(s, detail))}>
+                Review the new station report
+              </button>
+            </section>
+          )}
+
+          {st.step === "report" && isBuyer && !linesStale(st, detail) && (
             <section className="card">
               <span className="eyebrow">Step 2 · Accept or claim</span>
               <h2>Accept what arrived. Claim what didn't.</h2>
@@ -263,16 +278,7 @@ export function EscrowWorkspace({ detail }: { detail: OrderDetail }) {
               <p className="note">Filing a claim locks money. It never refunds you by itself: the supplier has to sign too.</p>
               <button
                 className="primary"
-                onClick={() =>
-                  sign(
-                    orderId,
-                    {
-                      ...claimRequest(st),
-                      chain: claimed ? { action: "claim", accepted: total - st.esc.released - st.esc.refunded - claimed, claimed } : { action: "accept_all" },
-                    },
-                    detail,
-                  )
-                }
+                onClick={() => sign(orderId, reviewedClaim(st, detail, total), detail)}
               >
                 {claimed ? `Sign: release ${usd(total - claimed)}, claim ${usd(claimed)}` : `Sign: accept all · release ${usd(total)}`}
               </button>

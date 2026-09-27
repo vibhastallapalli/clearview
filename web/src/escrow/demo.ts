@@ -67,6 +67,14 @@ export interface DemoState {
   rejected: boolean;
   events: EscrowEvent[];
   esc: { released: number; refunded: number; locked: number; status: EscrowStatus };
+  /** The station evidence the current lines were reviewed from. Null for the SIMULATED demo scan. */
+  linesFrom?: Evidence | null;
+}
+
+/** Which station scan and evidence revision a set of lines (and any transaction from them) came from. */
+export interface Evidence {
+  scanId: string;
+  revision: number;
 }
 
 export interface Tx {
@@ -86,6 +94,8 @@ export interface SignRequest {
   rows: [string, string][];
   /** Set = a real devnet transaction. Unset = simulated off-chain step. */
   chain?: ChainAction;
+  /** Set when the amounts come from reviewed station lines: re-checked against the order just before signing. */
+  evidence?: Evidence;
   apply: (tx: Tx, st: DemoState) => Partial<DemoState>;
 }
 
@@ -242,6 +252,7 @@ export function scanned(st: DemoState, detail?: OrderLike): Partial<DemoState> {
   if (!lines || !scan) {
     return {
       step: "report",
+      linesFrom: null,
       events: withEvent(st, { label: "Receiving report (evidence)", detail: "Demo scan, no photo analysed: 2 × Product A and 1 × Product B", sim: true }),
     };
   }
@@ -249,6 +260,7 @@ export function scanned(st: DemoState, detail?: OrderLike): Partial<DemoState> {
   return {
     step: "report",
     lines,
+    linesFrom: { scanId: detail!.order.latestScanId!, revision: detail!.order.evidenceRevision },
     events: withEvent(st, { label: "Receiving report (evidence)", detail: `Station scan · ${scan.analyzedBy === "mock" ? "Mock AI" : "Gemini"} saw ${seen}`, sim: scan.analyzedBy === "mock" }),
   };
 }
@@ -274,6 +286,36 @@ function settle(st: DemoState, o: Offer, tx: Tx, label: string): Partial<DemoSta
       claim: L,
     },
     events: withEvent(st, { label, detail: `Program paid ${usd(sup)} to supplier and refunded ${usd(buy)} to buyer`, ...txEvent(tx) }),
+  };
+}
+
+/**
+ * The report's lines are stale when a real station comparison exists that they weren't reviewed from:
+ * a newer scan or revision, or a real scan arriving after the SIMULATED demo lines.
+ */
+export function linesStale(st: DemoState, detail: OrderLike): boolean {
+  if (!scanLines(detail)) return false;
+  const from = st.linesFrom;
+  return !from || from.scanId !== detail.order.latestScanId || from.revision !== detail.order.evidenceRevision;
+}
+
+/** Evidence changed since the lines were reviewed, or since the request was prepared. */
+export const STALE_EVIDENCE = "The station scan changed since you reviewed it. Review the new station report before signing.";
+
+/**
+ * The accept/claim transaction for the reviewed lines. `total` is the escrowed total (on-chain when funded).
+ * Refuses stale lines so a transaction can't be prepared from an older station scan.
+ */
+export function reviewedClaim(st: DemoState, detail: OrderLike, total: number): SignRequest {
+  if (linesStale(st, detail)) throw new Error(STALE_EVIDENCE);
+  const claimed = claimedOf(st.lines);
+  const req = claimRequest(st);
+  const ev = st.linesFrom ?? undefined;
+  return {
+    ...req,
+    rows: ev ? [...req.rows, ["Station evidence", `scan ${ev.scanId} · revision ${ev.revision}`]] : req.rows,
+    chain: claimed ? { action: "claim", accepted: total - st.esc.released - st.esc.refunded - claimed, claimed } : { action: "accept_all" },
+    evidence: ev,
   };
 }
 

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { Comparison, Order, ScanResult } from "@cleardock/shared";
-import { initialState, linesFor, scanLines, scanned } from "./demo";
+import { STALE_EVIDENCE, initialState, linesFor, linesStale, reviewedClaim, scanLines, scanned, type DemoState } from "./demo";
 
 const comparison = {
   lines: [{ sku: "A", description: "Product A 500 g", unitPriceMinor: 1000, ordered: 3, billed: 3, observed: 2 }],
@@ -29,4 +29,38 @@ test("scanned() labels the fallback SIMULATED and uses the real scan when presen
   assert.equal(real.step, "report");
   assert.equal(real.events!.at(-1)!.sim, false);
   assert.match(real.events!.at(-1)!.detail, /Gemini saw 2 × Product A/);
+});
+
+test("a rescan while the report is open voids old choices and the transaction uses only the reviewed scan", () => {
+  // Scan 1: 2 of 3 bags seen. The buyer reviews it and also claims bag 2.
+  const first = { ...order({ comparison, latestScanId: "scan_1", evidenceRevision: 3 }), latestScan: scan };
+  let st: DemoState = { ...initialState(null), ...scanned(initialState(null), first) };
+  st = { ...st, lines: st.lines.map((l, i) => (i === 1 ? { ...l, claim: true } : l)) };
+  assert.equal(linesStale(st, first), false);
+  const before = reviewedClaim(st, first, 3000);
+  assert.deepEqual(before.chain, { action: "claim", accepted: 1000, claimed: 2000 });
+  assert.deepEqual(before.evidence, { scanId: "scan_1", revision: 3 });
+
+  // Scan 2 lands (all 3 bags seen) while the report is still open.
+  const rescanned = { lines: [{ ...comparison.lines[0], observed: 3 }] } as Comparison;
+  const second = { ...order({ comparison: rescanned, latestScanId: "scan_2", evidenceRevision: 4 }), latestScan: scan };
+  assert.equal(linesStale(st, second), true);
+  assert.throws(() => reviewedClaim(st, second, 3000), { message: STALE_EVIDENCE });
+
+  // Reviewing the new report replaces the lines and the old claim choices.
+  st = { ...st, ...scanned(st, second) };
+  assert.equal(linesStale(st, second), false);
+  assert.deepEqual(st.lines.map((l) => l.claim), [false, false, false]);
+  const after = reviewedClaim(st, second, 3000);
+  assert.deepEqual(after.chain, { action: "accept_all" });
+  assert.deepEqual(after.evidence, { scanId: "scan_2", revision: 4 });
+});
+
+test("a revision bump on the same scan also requires review; SIMULATED demo lines go stale once a real scan exists", () => {
+  const first = { ...order({ comparison, latestScanId: "scan_1", evidenceRevision: 3 }), latestScan: scan };
+  const st: DemoState = { ...initialState(null), ...scanned(initialState(null), first) };
+  assert.equal(linesStale(st, { ...first, order: { ...first.order, evidenceRevision: 4 } }), true);
+  const demo: DemoState = { ...initialState(null), ...scanned(initialState(null)) };
+  assert.equal(linesStale(demo, order({})), false);
+  assert.equal(linesStale(demo, first), true);
 });

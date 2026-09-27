@@ -1,6 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from "react";
 import type { OrderDetail } from "@cleardock/shared";
-import { PARTY, initialState, scanned, type DemoState, type OrderLike, type Role, type SignRequest, type Tx } from "./demo";
+import { api } from "../api";
+import { PARTY, STALE_EVIDENCE, initialState, scanned, type DemoState, type OrderLike, type Role, type SignRequest, type Tx } from "./demo";
 import { signAndSend } from "./sign";
 import { WalletModal, type ModalState } from "./WalletModal";
 
@@ -95,6 +96,12 @@ export function DemoProvider({ children }: { children: ReactNode }) {
     const { orderId, request, detail } = modal;
     setModal({ ...modal, phase: "sending", status: undefined, error: undefined });
     try {
+      // The station may have rescanned while this sheet was open: never sign amounts from older evidence.
+      if (request.evidence) {
+        const { order } = await api.order(orderId);
+        if (order.latestScanId !== request.evidence.scanId || order.evidenceRevision !== request.evidence.revision)
+          throw new Error(STALE_EVIDENCE);
+      }
       const tx: Tx = await signAndSend(request, detail, {
         status: (status) => setModal((m) => (m ? { ...m, phase: "sending", status } : m)),
         waitForSupplier: (supplier, note) =>
