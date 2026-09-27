@@ -8,7 +8,7 @@ import { claimWrite } from "./claim";
 import { isConflict, isNetwork, isUnavailable, isWrongWallet, type AgreementApi } from "./client";
 import type { AgreementWrite, Party } from "./contract";
 import { SimulatedAgreementApi, WALLETS, fakeSign } from "./fixture";
-import { OFFER_CHANGED, currentOffer, heldMinor, offerError, parseAmountToMinor, reviewedFrom, settlePlan, splitFor, viewFor } from "./model";
+import { OFFER_CHANGED, belowRemedy, currentOffer, heldMinor, offerError, parseAmountToMinor, reviewedFrom, settlePlan, splitFor, viewFor } from "./model";
 import { AgreementSession, UNAVAILABLE } from "./session";
 import { WrongWalletError, type Signer } from "./signer";
 
@@ -327,4 +327,11 @@ test("the scan suggests, the buyer confirms: an override needs a reason and is s
   assert.equal(w.claimedMinor, 2000);
   assert.ok(await buyer.write(w));
   assert.equal((await api.get(ORDER)).claim?.decisions[1].overrideReason, "bag torn");
+});
+
+test("offers below the signed remedy schedule are flagged by how much they fall short", () => {
+  const remedy = { termsVersion: 2, toBuyerMinor: 1000, toSupplierMinor: 0, basis: [] };
+  assert.equal(belowRemedy(400, remedy), 600);
+  assert.equal(belowRemedy(1000, remedy), null);
+  assert.equal(belowRemedy(0, null), null);
 });

@@ -1,10 +1,13 @@
 import { useCallback, useEffect, useState } from "react";
-import type { OrderDetail, OrderTermsState, OrderTermsVersion, Party, TermsPreview } from "@cleardock/shared";
+import { REMEDY_ISSUES, type OrderDetail, type OrderTermsState, type OrderTermsVersion, type Party, type TermsPreview } from "@cleardock/shared";
 import { ApiRequestError } from "../api";
 import { usd } from "../escrow/demo";
 import { short } from "../format";
 import * as phantom from "../wallet/phantom";
-import { initialDraft, parseDraft, termsApi, termsToSign, type DraftLine } from "./terms";
+import { REMEDY_LABEL, initialDraft, parseDraft, termsApi, termsToSign, type DraftLine, type DraftRemedies } from "./terms";
+
+/** What a proposal sends besides who and which revision. */
+type TermsBody = { lines: TermsPreview["terms"]["lines"]; inspectionHours: number; remedies: TermsPreview["terms"]["remedies"] };
 
 const POLL_MS = 2000;
 const OTHER: Record<Party, Party> = { buyer: "supplier", supplier: "buyer" };
@@ -88,7 +91,7 @@ export function TermsPanel({ detail, role, terms }: { detail: OrderDetail; role:
     return (
       <section className="card card-soft">
         <div className="row between wrap">
-          <span className="eyebrow">Order terms</span>
+          <span className="eyebrow">Step 2 · Order terms</span>
           <span className={`pill ${tone} pill-sm`}>{label}</span>
         </div>
         <p className="body">
@@ -101,7 +104,7 @@ export function TermsPanel({ detail, role, terms }: { detail: OrderDetail; role:
   return (
     <section className="card">
       <div className="row between wrap">
-        <span className="eyebrow">Order terms · agreed before funding</span>
+        <span className="eyebrow">Step 2 · Order terms · agreed before funding</span>
         <span className={`pill ${tone} pill-sm`}>{label}</span>
       </div>
       <ol className="terms-steps" aria-label="Order terms progress">
@@ -229,6 +232,14 @@ function TermsVersionView({ v, funded, preview }: { v: OrderTermsVersion; funded
           <span className="kv-value">CDT test token · Solana devnet</span>
         </div>
         <div className="kv-row">
+          <span>If something is wrong (refund of the claimed item's price)</span>
+          <span className="kv-value">
+            {t.remedies
+              ? REMEDY_ISSUES.map((i) => `${REMEDY_LABEL[i]} ${t.remedies[i]}%`).join(" · ")
+              : "No remedy schedule (signed before schedules existed)"}
+          </span>
+        </div>
+        <div className="kv-row">
           <span>Inspection window</span>
           <span className="kv-value">{t.inspection.hours} h from the first station scan after funding · informational, not enforced</span>
         </div>
@@ -259,13 +270,14 @@ function TermsEditor(props: {
   role: Party;
   busy: boolean;
   onCancel?: () => void;
-  onPropose: (preview: TermsPreview, body: { lines: TermsPreview["terms"]["lines"]; inspectionHours: number }) => void;
+  onPropose: (preview: TermsPreview, body: TermsBody) => void;
 }) {
   const { detail, state, role, busy } = props;
   const [init] = useState(() => initialDraft(state, detail));
   const [lines, setLines] = useState<DraftLine[]>(init.lines);
   const [hours, setHours] = useState(String(init.hours));
-  const [preview, setPreview] = useState<{ p: TermsPreview; body: { lines: TermsPreview["terms"]["lines"]; inspectionHours: number } } | null>(null);
+  const [remedies, setRemedies] = useState<DraftRemedies>(init.remedies);
+  const [preview, setPreview] = useState<{ p: TermsPreview; body: TermsBody } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [previewing, setPreviewing] = useState(false);
 
@@ -276,7 +288,7 @@ function TermsEditor(props: {
   };
 
   const doPreview = async () => {
-    const parsed = parseDraft(lines, hours);
+    const parsed = parseDraft(lines, hours, remedies);
     if ("error" in parsed) return setError(parsed.error);
     setError(null);
     setPreviewing(true);
@@ -339,6 +351,27 @@ function TermsEditor(props: {
           <input inputMode="numeric" value={hours} className="terms-hours" onChange={(e) => (setPreview(null), setHours(e.target.value))} />
         </label>
       </div>
+      <fieldset className="remedies">
+        <legend className="note">
+          <b>If something is wrong:</b> refund to the buyer, as a percent of each claimed item's price. This is the default settlement
+          offer; held money still moves only when both of you sign.
+        </legend>
+        <div className="row wrap gap-6">
+          {REMEDY_ISSUES.map((i) => (
+            <label key={i} className="row gap-6">
+              {REMEDY_LABEL[i]}
+              <input
+                inputMode="numeric"
+                className="terms-hours"
+                value={remedies[i]}
+                aria-label={`${REMEDY_LABEL[i]} refund percent`}
+                onChange={(e) => (setPreview(null), setRemedies((r) => ({ ...r, [i]: e.target.value })))}
+              />
+              %
+            </label>
+          ))}
+        </div>
+      </fieldset>
       {error && <p className="error">{error}</p>}
       {preview && (
         <div className="notice suggest">

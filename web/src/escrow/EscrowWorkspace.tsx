@@ -174,7 +174,7 @@ export function EscrowWorkspace({ detail }: { detail: OrderDetail }) {
 
           {!onChain && isBuyer && (
             <section className="card">
-              <span className="eyebrow">Step 0 · Escrow</span>
+              <span className="eyebrow">Step 3 · Fund escrow</span>
               {agreedTerms ? (
                 <>
                   <h2>Lock {usd(agreedTerms.terms.totalMinor)} CDT in escrow before the delivery.</h2>
@@ -201,7 +201,7 @@ export function EscrowWorkspace({ detail }: { detail: OrderDetail }) {
 
           {onChain && st.step === "delivered" && isBuyer && (
             <section className="card">
-              <span className="eyebrow">Step 1 · Receiving</span>
+              <span className="eyebrow">Step 4 · Receiving</span>
               {stationReport ? (
                 <>
                   <h2>The receiving station scanned your delivery.</h2>
@@ -253,7 +253,7 @@ export function EscrowWorkspace({ detail }: { detail: OrderDetail }) {
 
           {st.step === "report" && isBuyer && linesStale(st, detail) && (
             <section className="card">
-              <span className="eyebrow">Step 2 · Accept or claim</span>
+              <span className="eyebrow">Step 5 · Accept or claim</span>
               <p className="error">
                 The station scanned this delivery again (scan {detail.order.latestScanId}, revision{" "}
                 {detail.order.evidenceRevision}). Your earlier accept/claim choices were based on the previous scan and
@@ -267,7 +267,7 @@ export function EscrowWorkspace({ detail }: { detail: OrderDetail }) {
 
           {st.step === "report" && isBuyer && !linesStale(st, detail) && (
             <section className="card">
-              <span className="eyebrow">Step 2 · Accept or claim</span>
+              <span className="eyebrow">Step 5 · Accept or claim</span>
               <h2>Accept what arrived. Claim what didn't.</h2>
               <p className="notice suggest">
                 Suggested from station results: accept {st.lines.filter((l) => !l.miss).length}, claim {st.lines.filter((l) => l.miss).length}.

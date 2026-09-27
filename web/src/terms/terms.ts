@@ -1,4 +1,6 @@
 import {
+  DEFAULT_REMEDIES,
+  REMEDY_ISSUES,
   TERMS_PATHS,
   orderTermsMessage,
   termsHashOf,
@@ -7,6 +9,8 @@ import {
   type OrderTermsLine,
   type OrderTermsState,
   type Party,
+  type RemedyIssue,
+  type RemedySchedule,
   type TermsPreview,
 } from "@cleardock/shared";
 import { json, request } from "../api";
@@ -17,15 +21,22 @@ import { parseAmountToMinor } from "../agreement/model";
 
 export const termsApi = {
   get: (orderId: string) => request<OrderTermsState>(TERMS_PATHS.state(orderId)),
-  preview: (orderId: string, body: { lines: OrderTermsLine[]; inspectionHours: number }) =>
+  preview: (orderId: string, body: { lines: OrderTermsLine[]; inspectionHours: number; remedies?: RemedySchedule }) =>
     request<TermsPreview>(TERMS_PATHS.preview(orderId), json(body)),
-  propose: (orderId: string, body: { as: Party; expectedRevision: number; lines: OrderTermsLine[]; inspectionHours: number; walletSignature: string }) =>
+  propose: (orderId: string, body: { as: Party; expectedRevision: number; lines: OrderTermsLine[]; inspectionHours: number; remedies?: RemedySchedule; walletSignature: string }) =>
     request<OrderTermsState>(TERMS_PATHS.propose(orderId), json(body)),
   approve: (orderId: string, body: { as: Party; version: number; termsHash: string; walletSignature: string }) =>
     request<OrderTermsState>(TERMS_PATHS.approve(orderId), json(body)),
 };
 
 export const DEFAULT_INSPECTION_HOURS = 72;
+
+export const REMEDY_LABEL: Record<RemedyIssue, string> = { missing: "Missing item", damaged: "Damaged item", wrong_item: "Wrong item" };
+
+/** Remedy percents as typed. */
+export type DraftRemedies = Record<RemedyIssue, string>;
+const draftRemedies = (r: RemedySchedule = DEFAULT_REMEDIES): DraftRemedies =>
+  Object.fromEntries(REMEDY_ISSUES.map((i) => [i, String(r[i])])) as DraftRemedies;
 
 /** An editable line: text fields as typed, parsed only when previewing. */
 export interface DraftLine {
@@ -39,20 +50,34 @@ const dollars = (minor: number) => (minor / 100).toFixed(2);
 export const toDraft = (l: OrderTermsLine): DraftLine => ({ sku: l.sku, description: l.description, quantity: String(l.quantity), unitPrice: dollars(l.unitPriceMinor) });
 
 /** Draft lines to start from: the current version if there is one (to change it), else the latest purchase order. */
-export function initialDraft(state: OrderTermsState | null, detail: Pick<OrderDetail, "documents">): { lines: DraftLine[]; hours: number; from: string | null } {
-  if (state?.current) return { lines: state.current.terms.lines.map(toDraft), hours: state.current.terms.inspection.hours, from: `terms v${state.current.version}` };
+export function initialDraft(
+  state: OrderTermsState | null,
+  detail: Pick<OrderDetail, "documents">,
+): { lines: DraftLine[]; hours: number; remedies: DraftRemedies; from: string | null } {
+  if (state?.current)
+    return {
+      lines: state.current.terms.lines.map(toDraft),
+      hours: state.current.terms.inspection.hours,
+      remedies: draftRemedies(state.current.terms.remedies),
+      from: `terms v${state.current.version}`,
+    };
   const po = detail.documents.filter((d) => d.kind === "purchase_order").at(-1);
   if (po?.lines.length)
     return {
       lines: po.lines.map((l) => toDraft({ sku: l.sku, description: l.description, quantity: l.quantity, unitPriceMinor: l.unitPriceMinor })),
       hours: DEFAULT_INSPECTION_HOURS,
+      remedies: draftRemedies(),
       from: `purchase order ${po.source.filename}`,
     };
-  return { lines: [{ sku: null, description: "", quantity: "1", unitPrice: "" }], hours: DEFAULT_INSPECTION_HOURS, from: null };
+  return { lines: [{ sku: null, description: "", quantity: "1", unitPrice: "" }], hours: DEFAULT_INSPECTION_HOURS, remedies: draftRemedies(), from: null };
 }
 
 /** Parses the draft into whole-cent lines, or says what's wrong. The server computes the total. */
-export function parseDraft(lines: DraftLine[], hoursText: string): { lines: OrderTermsLine[]; inspectionHours: number } | { error: string } {
+export function parseDraft(
+  lines: DraftLine[],
+  hoursText: string,
+  remediesText: DraftRemedies = draftRemedies(),
+): { lines: OrderTermsLine[]; inspectionHours: number; remedies: RemedySchedule } | { error: string } {
   if (!lines.length) return { error: "Add at least one line." };
   const out: OrderTermsLine[] = [];
   for (const [i, l] of lines.entries()) {
@@ -64,7 +89,13 @@ export function parseDraft(lines: DraftLine[], hoursText: string): { lines: Orde
     out.push({ sku: l.sku, description: l.description.trim(), quantity: Number(l.quantity), unitPriceMinor: price });
   }
   if (!/^\d+$/.test(hoursText.trim()) || Number(hoursText) < 1 || Number(hoursText) > 720) return { error: "Inspection window must be 1 to 720 hours." };
-  return { lines: out, inspectionHours: Number(hoursText) };
+  const remedies = {} as RemedySchedule;
+  for (const i of REMEDY_ISSUES) {
+    const t = remediesText[i].trim();
+    if (!/^\d+$/.test(t) || Number(t) > 100) return { error: `${REMEDY_LABEL[i]}: the refund must be a whole percent from 0 to 100.` };
+    remedies[i] = Number(t);
+  }
+  return { lines: out, inspectionHours: Number(hoursText), remedies };
 }
 
 /** Why funding is blocked, or null when the current terms are agreed by both parties. */

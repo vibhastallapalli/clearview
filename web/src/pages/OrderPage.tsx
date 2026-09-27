@@ -57,72 +57,74 @@ export function OrderPage() {
     <section className="page">
       {error && <p className="error">{error}</p>}
 
+      {/* ---------- Documents: the first step (Gemini reads them; code compares) ---------- */}
+      <section className="card">
+        <span className="eyebrow">Step 1 · Documents</span>
+        <h2 className="h2-sm">Upload the purchase order and invoice</h2>
+        <p className="note">They are read into lines (quantity, price). The order terms start from the PO; the comparison checks the invoice and the station report against it.</p>
+        {(["purchase_order", "invoice", "delivery_receipt"] as DocumentKind[]).map((kind) => {
+          const doc = documents.filter((d) => d.kind === kind).at(-1);
+          return (
+            <div key={kind} className="doc">
+              <div className="row between">
+                <strong>{DOC_LABEL[kind]}</strong>
+                <label className="button small">
+                  {doc ? "Replace" : "Upload"}
+                  <input
+                    type="file"
+                    accept="application/pdf,image/png,image/jpeg"
+                    hidden
+                    disabled={!!busy}
+                    onChange={(e) => {
+                      const f = e.target.files?.[0];
+                      if (f) run(`upload-${kind}`, () => api.uploadDocument(order.id, kind, f));
+                      e.target.value = "";
+                    }}
+                  />
+                </label>
+              </div>
+              {busy === `upload-${kind}` && <p className="muted">Extracting…</p>}
+              {doc && (
+                <div className="small">
+                  {doc.source.filename} · {doc.language?.toUpperCase() ?? "?"} ·{" "}
+                  {doc.extractedBy === "mock" ? (
+                    <span className="pill warn pill-xs">MOCK</span>
+                  ) : doc.extractedBy === "cache" ? (
+                    <span className="pill warn pill-xs">CACHED GEMINI RESULT</span>
+                  ) : (
+                    "Gemini"
+                  )}
+                  <ul>
+                    {doc.lines.map((l, i) => (
+                      <li key={i}>
+                        {l.quantity} {l.unit} · {l.description} · {money(l.unitPriceMinor)}
+                        <div className="source">“{l.sourceText}”</div>
+                      </li>
+                    ))}
+                  </ul>
+                  {doc.warnings.map((w, i) => (
+                    <p key={i} className="warn-text">
+                      ⚠ {w}
+                    </p>
+                  ))}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </section>
+
       <EscrowWorkspace detail={data} />
 
       <details className="card card-soft legacy">
         <summary>
           <span className="eyebrow">Direct payment · Phase 1</span>
-          <span className="legacy-title">Documents, phone capture, comparison and approval</span>
+          <span className="legacy-title">Phone capture, comparison and direct approval</span>
           <StatusBadge status={order.status} />
         </summary>
 
         <div className="legacy-body">
           <div className="grid">
-            {/* ---------- Documents ---------- */}
-            <div className="panel">
-              <h3>Documents</h3>
-              {(["purchase_order", "invoice", "delivery_receipt"] as DocumentKind[]).map((kind) => {
-                const doc = documents.filter((d) => d.kind === kind).at(-1);
-                return (
-                  <div key={kind} className="doc">
-                    <div className="row between">
-                      <strong>{DOC_LABEL[kind]}</strong>
-                      <label className="button small">
-                        {doc ? "Replace" : "Upload"}
-                        <input
-                          type="file"
-                          accept="application/pdf,image/png,image/jpeg"
-                          hidden
-                          disabled={!!busy}
-                          onChange={(e) => {
-                            const f = e.target.files?.[0];
-                            if (f) run(`upload-${kind}`, () => api.uploadDocument(order.id, kind, f));
-                            e.target.value = "";
-                          }}
-                        />
-                      </label>
-                    </div>
-                    {busy === `upload-${kind}` && <p className="muted">Extracting…</p>}
-                    {doc && (
-                      <div className="small">
-                        {doc.source.filename} · {doc.language?.toUpperCase() ?? "?"} ·{" "}
-                        {doc.extractedBy === "mock" ? (
-                          <span className="pill warn pill-xs">MOCK</span>
-                        ) : doc.extractedBy === "cache" ? (
-                          <span className="pill warn pill-xs">CACHED GEMINI RESULT</span>
-                        ) : (
-                          "Gemini"
-                        )}
-                        <ul>
-                          {doc.lines.map((l, i) => (
-                            <li key={i}>
-                              {l.quantity} {l.unit} · {l.description} · {money(l.unitPriceMinor)}
-                              <div className="source">“{l.sourceText}”</div>
-                            </li>
-                          ))}
-                        </ul>
-                        {doc.warnings.map((w, i) => (
-                          <p key={i} className="warn-text">
-                            ⚠ {w}
-                          </p>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-
             {/* ---------- Delivery evidence ---------- */}
             <div className="panel">
               <div className="row between">
