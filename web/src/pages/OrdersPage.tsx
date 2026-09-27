@@ -53,7 +53,7 @@ export function OrdersPage() {
       <div className="page-head">
         <div className="page-title">
           <h1>Orders</h1>
-          <p className="lead">{role === "buyer" ? "Escrow-backed orders from your suppliers" : "Escrow-backed orders from your buyers"}</p>
+          <p className="lead">{role === "buyer" ? "From your suppliers" : "From your buyers"}</p>
         </div>
         <button className="secondary sm" onClick={reset} title="Dev only: restore the seeded demo order">
           Reset demo data

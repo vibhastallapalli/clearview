@@ -30,10 +30,10 @@ export function WalletModal({
     <div className="scrim" role="dialog" aria-modal="true" aria-labelledby="wallet-title">
       <div className="sheet">
         <div className="row between">
-          <span className="sheet-kicker">{real ? "Phantom request" : "Wallet request"}</span>
+          <span className="sheet-kicker">Wallet request</span>
           <span className="row gap-6">
             {!real && <span className="sim">SIMULATED</span>}
-            <span className="pill info">devnet</span>
+            <span className="pill info pill-xs">devnet</span>
           </span>
         </div>
         <h3 id="wallet-title">{title}</h3>
@@ -94,7 +94,7 @@ export function WalletModal({
           <div className="sheet-done">
             <div className="confirmed">
               <span className="confirmed-title">
-                ✓ {tx.simulated ? "Done" : "Confirmed on devnet and verified by ClearDock"}
+                ✓ Confirmed
                 {tx.simulated && <span className="sim"> · SIMULATED</span>}
               </span>
               {tx.simulated ? (
@@ -111,9 +111,7 @@ export function WalletModal({
           </div>
         )}
         <span className="sheet-note">
-          {real
-            ? "Real devnet transaction to the ClearDock escrow program. CDT is a devnet test token, not real money."
-            : "Off-chain step: simulated. Nothing is sent to devnet and no money moves."}
+          {real ? "Phantom · devnet test token, not real money" : "Simulated wallet"}
         </span>
       </div>
     </div>

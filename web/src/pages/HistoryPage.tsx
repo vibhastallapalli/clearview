@@ -11,8 +11,7 @@ export function HistoryPage() {
       <div className="page-title">
         <h1>Dispute history</h1>
         <p className="lead narrow">
-          Both sides see each other's record before accepting an order. It lists what happened and how it was resolved.
-          There are no fault ratings. <span className="sim">SIMULATED</span> records for the demo.
+          Past disputes and outcomes, visible to both parties. <span className="sim">SIMULATED</span>
         </p>
       </div>
       <div className="cols">

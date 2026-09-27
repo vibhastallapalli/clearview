@@ -100,33 +100,33 @@ export interface SignRequest {
 }
 
 export const OFFERS: Offer[] = [
-  { id: "refund", label: "Full refund", desc: "All locked money goes back to the buyer.", sup: 0, buy: 1 },
-  { id: "release", label: "Full release", desc: "All locked money goes to the supplier.", sup: 1, buy: 0 },
-  { id: "split", label: "Split", desc: "Half to each side.", sup: 0.5, buy: 0.5 },
+  { id: "refund", label: "Full refund", desc: "Return held funds to the buyer.", sup: 0, buy: 1 },
+  { id: "release", label: "Full release", desc: "Pay held funds to the supplier.", sup: 1, buy: 0 },
+  { id: "split", label: "Split", desc: "Divide held funds equally.", sup: 0.5, buy: 0.5 },
   {
     id: "replacement",
     label: "Replacement",
-    desc: "Supplier ships the missing bag. The money releases when the buyer scans it and signs.",
+    desc: "Supplier reships. Funds release on receipt.",
     sup: 1,
     buy: 0,
     phys: {
       who: "buyer",
-      wait: "Replacement bag in transit",
-      act: "Scan replacement & sign acceptance",
-      text: "The locked amount stays locked until the buyer scans the replacement and signs acceptance. Then it pays the supplier.",
+      wait: "Replacement in transit",
+      act: "Scan & accept replacement",
+      text: "Funds release to the supplier once the replacement is accepted.",
     },
   },
   {
     id: "cancel",
     label: "Cancel with return",
-    desc: "Buyer returns the Product B bag. The refund releases when the supplier scans the return and signs.",
+    desc: "Buyer returns the item. Refund on receipt.",
     sup: 0,
     buy: 1,
     phys: {
       who: "supplier",
-      wait: "Product B bag being returned",
-      act: "Scan returned bag & sign",
-      text: "The refund releases when the supplier scans the returned bag and signs acceptance.",
+      wait: "Return in transit",
+      act: "Scan & accept return",
+      text: "Refund releases once the return is accepted.",
     },
   },
 ];
@@ -183,7 +183,7 @@ export function scanLines(detail: OrderLike | null): Line[] | null {
         lines.push({
           id: `${l.sku ?? l.description}-${i}`,
           label: `${l.description} · unit ${i}`,
-          sub: seen ? "Seen on scan · label matches" : "Not seen on scan",
+          sub: seen ? "Matched" : "Not detected",
           priceMinor: l.unitPriceMinor,
           claim: !seen,
           miss: !seen,
@@ -196,9 +196,9 @@ export function scanLines(detail: OrderLike | null): Line[] | null {
 }
 
 const DEMO_LINES: Line[] = [
-    { id: "a1", label: "Product A · bag 1", sub: "Seen on scan · label matches", priceMinor: 1000, claim: false, miss: false },
-    { id: "a2", label: "Product A · bag 2", sub: "Seen on scan · label matches", priceMinor: 1000, claim: false, miss: false },
-    { id: "a3", label: "Product A · bag 3", sub: "Not seen · a Product B bag arrived instead", priceMinor: 1000, claim: true, miss: true },
+    { id: "a1", label: "Product A · bag 1", sub: "Matched", priceMinor: 1000, claim: false, miss: false },
+    { id: "a2", label: "Product A · bag 2", sub: "Matched", priceMinor: 1000, claim: false, miss: false },
+    { id: "a3", label: "Product A · bag 3", sub: "Not detected", priceMinor: 1000, claim: true, miss: true },
 ];
 
 export const totalOf = (lines: Line[]) => lines.reduce((sum, l) => sum + l.priceMinor, 0);
@@ -217,8 +217,8 @@ export function initialState(detail: OrderLike | null): DemoState {
     outcome: null,
     rejected: false,
     events: [
-      { label: "Both parties signed the order terms", detail: "3 × Product A 500 g at $10.00 · 3-day inspection window", at: "09:12", sim: true },
-      { label: "Carrier: delivered", detail: "Inspection window starts", at: "10:42", sim: true },
+      { label: "Order terms signed", detail: "3 × Product A · 3-day inspection", at: "09:12", sim: true },
+      { label: "Delivered", detail: "Inspection started", at: "10:42", sim: true },
     ],
     esc: { released: 0, refunded: 0, locked: 0, status: "funded" },
   };
@@ -237,7 +237,7 @@ export function fundRequest(st: DemoState, reference: string): SignRequest {
     ],
     chain: { action: "fund", amount: total },
     apply: (tx, s) => ({
-      events: withEvent(s, { label: "Buyer funded escrow", detail: `${usd(total)} CDT locked in the escrow program`, ...txEvent(tx) }),
+      events: withEvent(s, { label: "Escrow funded", detail: `${usd(total)} CDT deposited`, ...txEvent(tx) }),
     }),
   };
 }
@@ -253,7 +253,7 @@ export function scanned(st: DemoState, detail?: OrderLike): Partial<DemoState> {
     return {
       step: "report",
       linesFrom: null,
-      events: withEvent(st, { label: "Receiving report (evidence)", detail: "Demo scan, no photo analysed: 2 × Product A and 1 × Product B", sim: true }),
+      events: withEvent(st, { label: "Receiving report", detail: "2 × Product A, 1 × Product B detected · demo scan, no photo analysed", sim: true }),
     };
   }
   const seen = scan.observed.map((o) => `${o.count} × ${o.labelText}`).join(", ") || "nothing it could read";
@@ -261,7 +261,7 @@ export function scanned(st: DemoState, detail?: OrderLike): Partial<DemoState> {
     step: "report",
     lines,
     linesFrom: { scanId: detail!.order.latestScanId!, revision: detail!.order.evidenceRevision },
-    events: withEvent(st, { label: "Receiving report (evidence)", detail: `Station scan · ${scan.analyzedBy === "mock" ? "Mock AI" : "Gemini"} saw ${seen}`, sim: scan.analyzedBy === "mock" }),
+    events: withEvent(st, { label: "Receiving report", detail: `Station scan · ${scan.analyzedBy === "mock" ? "Mock AI" : "Gemini"} saw ${seen}`, sim: scan.analyzedBy === "mock" }),
   };
 }
 
@@ -277,7 +277,7 @@ function settle(st: DemoState, o: Offer, tx: Tx, label: string): Partial<DemoSta
     pending: null,
     esc: { released: rel, refunded: ref, locked: 0, status: "settled" },
     outcome: {
-      title: `Both signed. Supplier paid ${usd(rel)}, buyer refunded ${usd(ref)}.`,
+      title: "Settlement complete",
       label: o.label,
       sup: rel,
       buy: ref,
@@ -285,7 +285,7 @@ function settle(st: DemoState, o: Offer, tx: Tx, label: string): Partial<DemoSta
       simulated: tx.simulated,
       claim: L,
     },
-    events: withEvent(st, { label, detail: `Program paid ${usd(sup)} to supplier and refunded ${usd(buy)} to buyer`, ...txEvent(tx) }),
+    events: withEvent(st, { label, detail: `${usd(sup)} to supplier · ${usd(buy)} to buyer`, ...txEvent(tx) }),
   };
 }
 
@@ -332,8 +332,8 @@ export function claimRequest(st: DemoState): SignRequest {
       apply: (tx, s) => ({
         step: "settled",
         esc: { released: total, refunded: 0, locked: 0, status: "released" },
-        outcome: { title: `Accepted in full. Supplier paid ${usd(total)}.`, sup: total, buy: 0, sig: tx.sig, simulated: tx.simulated, claim: 0 },
-        events: withEvent(s, { label: `Buyer accepted all ${st.lines.length} lines`, detail: `${usd(total)} released to supplier`, ...txEvent(tx) }),
+        outcome: { title: "Accepted in full", sup: total, buy: 0, sig: tx.sig, simulated: tx.simulated, claim: 0 },
+        events: withEvent(s, { label: "All items accepted", detail: `${usd(total)} released`, ...txEvent(tx) }),
       }),
     };
   }
@@ -349,10 +349,10 @@ export function claimRequest(st: DemoState): SignRequest {
       events: [
         ...withEvent(s, {
           label: `Buyer accepted ${accepted} line${accepted === 1 ? "" : "s"}`,
-          detail: `${usd(released)} released to supplier right away`,
+          detail: `${usd(released)} released`,
           ...txEvent(tx),
         }),
-        { at: now(), label: "Claim filed", detail: `${k} line${k === 1 ? "" : "s"} · ${usd(claimed)} locked until both sign a settlement` },
+        { at: now(), label: "Claim filed", detail: `${usd(claimed)} held` },
       ],
     }),
   };
@@ -402,7 +402,7 @@ export function acceptRequest(st: DemoState): SignRequest {
       apply: (tx, s) => ({
         step: "physical",
         pending: { ...phys, id: o.id, label: o.label },
-        events: withEvent(s, { label: `Both signed: ${o.label}`, detail: `${phys.wait} · ${usd(L)} stays locked`, ...txEvent(tx) }),
+        events: withEvent(s, { label: `Both signed: ${o.label}`, detail: `${phys.wait} · ${usd(L)} held`, ...txEvent(tx) }),
       }),
     };
   }
@@ -430,7 +430,7 @@ export const rejected = (st: DemoState, role: Role): Partial<DemoState> => ({
   offer: null,
   rejected: true,
   esc: { ...st.esc, status: "claimed" },
-  events: withEvent(st, { label: `${PARTY[role].name} rejected the offer`, detail: `${usd(st.esc.locked)} stays locked · case still open` }),
+  events: withEvent(st, { label: `${PARTY[role].name} rejected the offer`, detail: `${usd(st.esc.locked)} held` }),
 });
 
 export function historyFor(key: Role, st: DemoState | null) {
@@ -444,8 +444,8 @@ export function historyFor(key: Role, st: DemoState | null) {
   return {
     name: PARTY[key].name,
     role: PARTY[key].role,
-    summary: `Disputed ${n} of the last ${of} orders`,
-    expired: `${h.expired} offer${h.expired === 1 ? "" : "s"} expired unanswered`,
+    summary: `${n} dispute${n === 1 ? "" : "s"} in ${of} orders`,
+    expired: `${h.expired} expired offer${h.expired === 1 ? "" : "s"}`,
     rows: [...extra, ...h.rows],
   };
 }
@@ -454,12 +454,11 @@ export const TONE = { ok: "ok", warn: "warn", bad: "bad", info: "info" } as cons
 export type Tone = keyof typeof TONE;
 
 export function orderStatus(st: DemoState): [string, Tone] {
-  const L = st.esc.locked;
   const map: Record<Step, [string, Tone]> = {
-    delivered: ["Delivered · awaiting inspection", "info"],
+    delivered: ["Awaiting inspection", "info"],
     scanning: ["Scanning delivery", "info"],
     report: ["Discrepancy found", "warn"],
-    claimed: [`Claim open · ${usd(L)} locked`, "bad"],
+    claimed: ["Claim open", "bad"],
     offer: ["Settlement offer pending", "warn"],
     physical: [st.pending?.wait ?? "Waiting on the physical step", "info"],
     settled: [st.esc.status === "released" ? "Released" : "Settled", "ok"],
