@@ -85,7 +85,10 @@ function record(orderId: string): AgreementRecord {
 function view(rec: AgreementRecord): AgreementState {
   const { log: _log, ...state } = rec;
   const cur = rec.offers.find((o) => o.id === rec.currentOfferId);
-  return { ...state, nextActor: rec.claim?.status === "filed" && cur?.status === "open" ? OTHER[cur.proposedBy] : null };
+  // The claim's own scan (never a newer one) and its photo. Scans and captures are never edited.
+  const scan = rec.claim && db.scans.find((s) => s.id === rec.claim!.scanId);
+  const stationCapture = (scan && db.captures.find((c) => c.id === scan.captureId)) ?? null;
+  return { ...state, claim: rec.claim && { ...rec.claim, stationCapture }, nextActor: rec.claim?.status === "filed" && cur?.status === "open" ? OTHER[cur.proposedBy] : null };
 }
 
 /**
@@ -177,7 +180,7 @@ function prepareClaim(order: Order, body: Record<string, unknown>): AgreementSta
     throw bad("proofIds must be distinct phone proofs of this order.");
 
   const { scanId, evidenceRevision, lines, claimedMinor, proofIds, decisions } = write;
-  rec.claim = { status: "prepared", scanId, evidenceRevision, lines, claimedMinor, proofIds, decisions, preparedAt: now(), claimSignature: null, filedAt: null, chain: null };
+  rec.claim = { status: "prepared", scanId, evidenceRevision, lines, claimedMinor, proofIds, decisions, preparedAt: now(), claimSignature: null, filedAt: null, chain: null, stationCapture: null };
   commit(rec, key);
   return view(rec);
 }

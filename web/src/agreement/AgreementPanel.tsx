@@ -225,6 +225,32 @@ function ClaimCard({
           </div>
         ))}
       </div>
+      {c.stationCapture ? (
+        <figure className="claim-photo">
+          <a href={c.stationCapture.imageUrl} target="_blank" rel="noreferrer">
+            <img className="evidence" src={c.stationCapture.imageUrl} alt="Station photo the claim was reviewed from" />
+          </a>
+          <figcaption className="caption">
+            Station photo behind this claim · taken {time(c.stationCapture.capturedAt)} · sha256 {c.stationCapture.imageSha256.slice(0, 12)}…
+            {c.stationCapture.fixture && <span className="pill warn pill-xs">SIMULATED · {c.stationCapture.fixture}</span>}
+          </figcaption>
+        </figure>
+      ) : (
+        <p className="note">This station scan has no photo.</p>
+      )}
+      {c.decisions.some((d) => d.overrideReason) && (
+        <div className="kv">
+          {c.decisions
+            .filter((d) => d.overrideReason)
+            .map((d, i) => (
+              <div key={i} className="kv-row">
+                <span>
+                  {d.description}: scan suggested {d.suggested}, buyer chose {d.decided} · “{d.overrideReason}”
+                </span>
+              </div>
+            ))}
+        </div>
+      )}
       <p className="caption">
         From station scan {c.scanId} · revision {c.evidenceRevision}
         {c.scanId !== detail.order.latestScanId && " · the station has scanned again since; the claim keeps its original scan"}
@@ -241,7 +267,7 @@ function ClaimCard({
       <p className="note">
         {proofs.length
           ? `${proofs.length} photo${proofs.length === 1 ? "" : "s"} attached as proof (raw photos, shown below; not checked by AI).`
-          : "No photo proof attached to the claim."}
+          : "No phone photos attached; the station photo above is the evidence."}
       </p>
       {!filed && (
         <>

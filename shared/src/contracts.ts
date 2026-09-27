@@ -420,6 +420,8 @@ export interface AgreementClaim {
   claimSignature: string | null;
   filedAt: string | null;
   chain: { escrowAddress: string; heldMinor: number; releasedMinor: number; refundedMinor: number } | null;
+  /** The station photo behind scanId (the evidence the lines were reviewed from), as served. Null if the scan has none. */
+  stationCapture: Capture | null;
 }
 
 /**

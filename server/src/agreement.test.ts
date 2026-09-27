@@ -116,10 +116,11 @@ function seedDb(dataDir: string) {
       totalMinor: 1000, releasedMinor: 0, claimedMinor: 0, refundedMinor: 0, status: "funded", events: [],
     },
   };
-  const scan = (id: string) => ({ id, orderId: OID, captureId: "cap_1", observed: [], unreadable: [], notes: "fixture", analyzedBy: "mock", analyzedAt: t });
+  const capture = (id: string) => ({ id, orderId: OID, sessionId: null, source: "station", imageUrl: `/files/${id}.jpg`, imageSha256: id, capturedAt: t, sensors: [], fixture: "test photo" });
+  const scan = (id: string) => ({ id, orderId: OID, captureId: id === "scan_old" ? "cap_1" : "cap_2", observed: [], unreadable: [], notes: "fixture", analyzedBy: "mock", analyzedAt: t });
   const proof = { id: "prf_1", orderId: OID, captureId: "cap_p", imageSha256: "0", kind: "live", stationScanId: "scan_old", stationCaptureId: "cap_1", evidenceRevision: 2, createdAt: t };
   writeFileSync(join(dataDir, "db.json"), JSON.stringify({
-    suppliers: [sup], orders: [order], documents: [], sessions: [], captures: [], scans: [scan("scan_old"), scan("scan_new")],
+    suppliers: [sup], orders: [order], documents: [], sessions: [], captures: [capture("cap_1"), capture("cap_2")], scans: [scan("scan_old"), scan("scan_new")],
     proofs: [proof], paymentAttempts: [], archivedOrders: [], agreements: [],
   }));
 }
@@ -234,6 +235,7 @@ describe("agreement", () => {
     const fresh = await get(); // another browser, no localStorage
     assert.equal(fresh.claim?.status, "prepared");
     assert.equal(fresh.claim?.scanId, "scan_old"); // not the newer station scan
+    assert.equal(fresh.claim?.stationCapture?.imageUrl, "/files/cap_1.jpg"); // the photo of that scan, for both parties
     assert.deepEqual(fresh.claim?.lines.map((l) => l.claimedMinor), [250, 150]);
     assert.deepEqual(fresh.claim?.proofIds, ["prf_1"]);
     // The scan suggestion is kept next to the buyer decision and the override reason.

@@ -428,6 +428,8 @@ details.legacy[open] > summary::after { content: "Hide ▴"; }
 .qr a { word-break: break-all; }
 .qr img { border-radius: 10px; background: #fff; padding: 6px; }
 .evidence { width: 100%; border-radius: 14px; border: 1px solid rgba(255, 255, 255, 0.9); }
+.claim-photo { margin: 0; display: flex; flex-direction: column; gap: 6px; }
+.claim-photo .evidence { max-height: 320px; object-fit: contain; background: rgba(20, 30, 50, 0.06); }
 .error { color: var(--bad); background: var(--bad-bg); padding: 10px 14px; border-radius: 12px; }
 .warn-text { color: var(--warn); }
 .ok-text { color: var(--ok); font-weight: 600; }
