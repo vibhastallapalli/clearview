@@ -1,7 +1,7 @@
 import { Buffer } from "buffer";
 import { Connection, PublicKey, SendTransactionError, SystemProgram, Transaction, TransactionExpiredBlockheightExceededError, TransactionInstruction, type AccountMeta } from "@solana/web3.js";
-import { TERMS_PATHS, type OrderDetail, type OrderTermsState } from "@cleardock/shared";
-import { api, request } from "../api";
+import { TERMS_PATHS, termsHashOf, type OrderDetail, type OrderTermsState } from "@cleardock/shared";
+import { api, request as apiRequest } from "../api";
 import { short } from "../format";
 import * as phantom from "../wallet/phantom";
 import type { ChainAction, SignRequest, Tx } from "./demo";
@@ -62,6 +62,21 @@ export async function signAndSend(request: SignRequest, detail: OrderDetail, hoo
   hooks.status("Connecting Phantom…");
   const signer = phantom.currentPublicKey() ?? (await phantom.connect());
   const recorded = detail.order.escrow;
+  // Funding commits money: every parameter must equal the terms both parties agreed, read fresh from the
+  // server, before Phantom is asked to sign (fail closed; the server rejecting the record later is too late).
+  const termsHash =
+    chain.action === "fund"
+      ? await checkFunding(await apiRequest<OrderTermsState>(TERMS_PATHS.state(detail.order.id)), {
+          orderId: detail.order.id,
+          reference: detail.order.reference,
+          amount: chain.amount,
+          signer,
+          recordedBuyer: recorded?.buyer ?? null,
+          supplier: detail.supplier.walletAddress,
+          programId: config.escrowProgramId,
+          mint: config.mint,
+        })
+      : null;
   const buyer = new PublicKey(recorded?.buyer ?? signer);
   if (signer !== buyer.toBase58())
     throw new Error(`Phantom is on ${short(signer)}. Switch Phantom to the buyer account ${short(buyer.toBase58())} and try again.`);
@@ -72,8 +87,6 @@ export async function signAndSend(request: SignRequest, detail: OrderDetail, hoo
   const [vault] = PublicKey.findProgramAddressSync([Buffer.from("vault"), escrow.toBuffer()], programId);
   if (recorded && recorded.escrowAddress !== escrow.toBase58()) throw new Error("This order's recorded escrow doesn't match its buyer and reference.");
 
-  // Funding commits money: only for order terms both parties approved, read fresh from the server (fail closed).
-  const termsHash = chain.action === "fund" ? await agreedTermsHash(detail.order.id, chain.amount) : null;
   const ixs = await instructions(chain, { programId, mint, buyer, supplier, escrow, vault, orderIdHash, reference: detail.order.reference, termsHash });
   const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash("confirmed");
   let tx = new Transaction({ feePayer: buyer, blockhash, lastValidBlockHeight }).add(...ixs);
@@ -233,14 +246,40 @@ async function instructions(chain: ChainAction, k: Keys): Promise<TransactionIns
 const ata = (mint: PublicKey, owner: PublicKey) =>
   PublicKey.findProgramAddressSync([owner.toBuffer(), TOKEN_PROGRAM.toBuffer(), mint.toBuffer()], ATA_PROGRAM)[0];
 
-/** The escrow's terms_hash: the current order terms, only if both parties approved them and the amount matches. */
-async function agreedTermsHash(orderId: string, amount: number): Promise<Buffer> {
-  const st = await request<OrderTermsState>(TERMS_PATHS.state(orderId));
+export interface FundingParams {
+  orderId: string;
+  reference: string;
+  amount: number;
+  /** The wallet Phantom is connected to: it signs and pays. */
+  signer: string;
+  /** The buyer of an escrow already recorded for this order, if any. */
+  recordedBuyer: string | null;
+  supplier: string;
+  programId: string;
+  mint: string;
+}
+
+/**
+ * The escrow's terms_hash, only if the current terms are agreed by both parties and every funding parameter
+ * (buyer, supplier, mint, program, order reference, amount) equals them. Throws "Not funded: …" otherwise.
+ */
+export async function checkFunding(st: OrderTermsState, p: FundingParams): Promise<Buffer> {
   if (st.status !== "agreed" || !st.current)
     throw new Error(`Not funded: the order terms aren't agreed by both parties (${st.status}${st.outstanding.length ? `, waiting on ${st.outstanding.join(" and ")}` : ""}).`);
-  if (st.current.terms.totalMinor !== amount)
-    throw new Error(`Not funded: the agreed terms v${st.current.version} total ${st.current.terms.totalMinor}, not ${amount}.`);
-  return Buffer.from(st.current.termsHash, "hex");
+  const { terms, version, termsHash } = st.current;
+  const differ = (what: string, got: string | number, agreed: string | number) =>
+    new Error(`Not funded: ${what} is ${typeof got === "number" ? got : short(got)}, but the agreed terms v${version} say ${typeof agreed === "number" ? agreed : short(agreed)}.`);
+  if (terms.orderId !== p.orderId) throw differ("the order", p.orderId, terms.orderId);
+  if (terms.reference !== p.reference) throw differ("the order reference", p.reference, terms.reference);
+  if (p.signer !== terms.buyerWallet)
+    throw new Error(`Not funded: Phantom is on ${short(p.signer)}. Switch Phantom to the agreed buyer account ${short(terms.buyerWallet)} and try again.`);
+  if (p.recordedBuyer !== null && p.recordedBuyer !== terms.buyerWallet) throw differ("the recorded escrow buyer", p.recordedBuyer, terms.buyerWallet);
+  if (p.supplier !== terms.supplierWallet) throw differ("the supplier wallet", p.supplier, terms.supplierWallet);
+  if (p.mint !== terms.mint) throw differ("the configured token mint", p.mint, terms.mint);
+  if (p.programId !== terms.escrowProgramId) throw differ("the configured escrow program", p.programId, terms.escrowProgramId);
+  if (p.amount !== terms.totalMinor) throw differ("the amount (cents)", p.amount, terms.totalMinor);
+  if ((await termsHashOf(terms)) !== termsHash) throw new Error(`Not funded: the agreed terms v${version} don't hash to their recorded terms hash.`);
+  return Buffer.from(termsHash, "hex");
 }
 
 async function sha256(data: string): Promise<Buffer> {
