@@ -112,6 +112,11 @@ export interface Capture {
   imageSha256: string;
   capturedAt: string;
   sensors: SensorReading[];
+  /**
+   * Set when the image is a test fixture, not a live photo (e.g. "samples/photos/synthetic/swapped.jpg").
+   * The UI must label it SIMULATED. Absent or null = a real camera photo.
+   */
+  fixture?: string | null;
 }
 
 export interface ObservedItem {

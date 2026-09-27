@@ -24,10 +24,11 @@ const early = new FormData(); early.append("image", file("samples/photos/synthet
 const code0 = (await j(await fetch(`${B}/api/orders/${oid}/capture-sessions`, { method: "POST" }))).body.url.split("/").pop();
 const e = await post(`/api/capture-sessions/${code0}/captures`, early);
 console.log(e.status === 409 ? "PASS: phone photo before any station scan is refused (409)" : `FAIL: early phone photo got ${e.status}`);
-const st = new FormData(); st.append("orderId", oid); st.append("mockScenario", "core"); st.append("image", file("samples/photos/synthetic/swapped.jpg", "image/jpeg"), "station.jpg");
+const st = new FormData(); st.append("orderId", oid); st.append("mockScenario", "core"); st.append("fixture", "samples/photos/synthetic/swapped.jpg"); st.append("image", file("samples/photos/synthetic/swapped.jpg", "image/jpeg"), "station.jpg");
 const s = await post("/api/station/captures", st, { "x-station-token": "t" });
 console.log("station capture", s.status, s.status < 300 ? "" : s.body);
 const before = (await j(await fetch(`${B}/api/orders/${oid}`))).body;
+console.log(before.latestCapture?.fixture ? `PASS: station capture labelled as fixture (${before.latestCapture.fixture})` : "FAIL: station fixture not labelled");
 console.log("AFTER STATION ", JSON.stringify(snap(before)));
 
 const { url } = (await j(await fetch(`${B}/api/orders/${oid}/capture-sessions`, { method: "POST" }))).body;

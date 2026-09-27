@@ -111,6 +111,7 @@ async function ingestCapture(args: {
   file: Express.Multer.File;
   sensors: SensorReading[];
   mockScenario?: MockScenario;
+  fixture?: string | null;
 }) {
   const { order, file } = args;
   if (!file.mimetype.startsWith("image/")) throw new HttpError(400, "bad_request", "Capture must be an image");
@@ -146,7 +147,7 @@ async function ingestCapture(args: {
 }
 
 /** Stores the image file and its Capture record. Changes nothing else on the order. */
-function saveCapture(args: { order: Order; source: CaptureSource; sessionId: string | null; file: Express.Multer.File; sensors: SensorReading[] }): Capture {
+function saveCapture(args: { order: Order; source: CaptureSource; sessionId: string | null; file: Express.Multer.File; sensors: SensorReading[]; fixture?: string | null }): Capture {
   const { order, file } = args;
   const captureId = id("cap");
   const ext = file.mimetype === "image/png" ? "png" : "jpg";
@@ -162,6 +163,7 @@ function saveCapture(args: { order: Order; source: CaptureSource; sessionId: str
     imageSha256: sha256(file.buffer),
     capturedAt: now(),
     sensors: args.sensors,
+    fixture: args.fixture ?? null,
   };
   db.captures.push(capture);
   save();
@@ -350,6 +352,7 @@ app.post(
       file: req.file,
       sensors,
       mockScenario: req.body.mockScenario,
+      fixture: typeof req.body.fixture === "string" && req.body.fixture.trim() ? req.body.fixture.trim() : null,
     });
     res.status(201).json(result);
   }),

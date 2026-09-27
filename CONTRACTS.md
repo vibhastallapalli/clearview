@@ -58,7 +58,7 @@ Base `/api`. Errors are `{ error, code }` with `code` one of `not_found`, `bad_r
 | POST | `/orders/:id/capture-sessions` | | `{ session, url }` (put `url` in the QR) |
 | GET | `/capture-sessions/:code` | | `{ session, orderReference }` |
 | POST | `/capture-sessions/:code/captures` | multipart `image`, `mockScenario?` | `{ capture, proof, order }`. **Phone proof**, see below. 409 `conflict` if the order has no station scan yet |
-| POST | `/station/captures` | header `x-station-token`; multipart `orderId`, `image`, `weightGrams?`, `simulated?`, `mockScenario?` | `{ capture, scan, order }`. The **authoritative** delivery scan: sets `latestScanId`, recomputes the comparison, bumps `evidenceRevision`, voids approval |
+| POST | `/station/captures` | header `x-station-token`; multipart `orderId`, `image`, `weightGrams?`, `simulated?`, `mockScenario?`, `fixture?` | `{ capture, scan, order }`. `fixture` (a sample path) marks a test image: stored as `capture.fixture`, label it SIMULATED. The **authoritative** delivery scan: sets `latestScanId`, recomputes the comparison, bumps `evidenceRevision`, voids approval |
 | POST | `/orders/:id/approve` | `{ evidenceRevision }` | `OrderDetail`, or 409 `stale_approval` |
 | POST | `/orders/:id/payments` | | `OrderDetail` (idempotent per approval; 409 if `DEMO_TOKEN_MINT` unset) |
 | POST | `/orders/:id/payments/transaction` | `{ payer }` | `PaymentTransaction`: **unsigned**. 409 if approval stale, payment submitted/confirmed/unknown, or another wallet's tx could still land; 503 if RPC down |
