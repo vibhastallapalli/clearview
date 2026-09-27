@@ -31,6 +31,7 @@ import {
   type PaymentCtx,
 } from "./solana/payments.ts";
 import { escrowRouter } from "./escrow.ts";
+import { agreementRouter } from "./agreement.ts";
 import { configuredMint, isValidAmount, isWallet, publicConfig, rpcUrl } from "./solana/tx.ts";
 import { analyzeDocument, analyzeScan, type MockScenario } from "./ai/analyze.ts";
 import { geminiEnabled } from "./ai/gemini.ts";
@@ -451,6 +452,7 @@ app.post(
 // ---------- escrow (P4): records verified on-chain escrow events ----------
 
 app.use(escrowRouter);
+app.use(agreementRouter);
 
 // ---------- dev ----------
 

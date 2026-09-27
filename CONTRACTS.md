@@ -101,6 +101,22 @@ Base `/api`. Errors are `{ error, code }` with `code` one of `not_found`, `bad_r
 
 Program `ESCROW_PROGRAM_ID` (also in `GET /config` as `escrowProgramId`). The escrow PDA is `["escrow", buyer, sha256(order.reference)]`, the vault is `["vault", escrow]`. The browser builds and signs escrow transactions (see `solana/escrow`), then reports each one to `/escrow/events`. An order with an escrow can't also be paid directly (`/payments` → 409), and a demo reset archives it (the reference is single-use because the PDA is keyed by it).
 
-## Phase 2 (types exist, nothing built)
+## Agreement (negotiating a claimed amount)
 
-`EscrowRecord`, `Claim`, `ClaimLine`, `SettlementOffer`, `SettlementKind`. Rules: [docs/escrow-rulebook.md](docs/escrow-rulebook.md). Key invariant: `toSupplierMinor + toBuyerMinor` equals the locked amount, both signatures required.
+Types: `AgreementState`, `AgreementWrite`, `agreementMessage()`, `AGREEMENT_PATHS` in `shared/src/contracts.ts`. Every endpoint returns the whole `AgreementState`. Amounts are integer CDT minor units. Rules: [docs/escrow-rulebook.md](docs/escrow-rulebook.md). Key invariant: `toSupplierMinor + toBuyerMinor` equals the held amount, both settle signatures required.
+
+| Method + path (under `/api/orders/:id/agreement`) | Body | Wallet signature |
+|---|---|---|
+| `GET` | – | – |
+| `POST /claim` | `prepare_claim` write | buyer |
+| `POST /claim/confirm` | `{ claimSignature }` | none: the claim tx is verified on devnet |
+| `POST /offers` | `propose` write (a counter sets `replacesOfferId` to the open offer) | proposer |
+| `POST /offers/:offerId/accept` · `/reject` | `accept` / `reject` write with the reviewed `version` and amounts | responder |
+| `POST /settlement` | `record_settlement` write; a known `{ signature }` alone re-checks it | reporter (new signatures only) |
+
+1. **Identity.** The body is the write plus `walletSignature`: base64 of Phantom `signMessage(agreementMessage(orderId, write))` (`web/src/wallet/phantom.ts` `signMessage`). The server verifies it against `order.escrow.buyer` / `.supplier`, which are set only from verified chain state. `as` alone is never trusted. Wrong or missing signature → 401. This proves which wallet acted, not which person or device.
+2. **Claim.** Save the reviewed claim (station `scanId`, lines, `claimedMinor`, `proofIds`) *before* signing the on-chain claim, then call `/claim/confirm` with its signature. Any browser can then read the lines from `GET`. Confirm verifies program, escrow, `Claim` instruction and order binding, and requires the chain's `claimedMinor` to equal the saved claim. A filed claim can't change and is never rebuilt from a newer scan.
+3. **Revisions.** Writes carry `expectedRevision`; a stale one gets 409 `conflict`. The same signed write sent again after it was applied returns the current state without applying it twice.
+4. **Offers.** The split must equal exactly what the verified claim holds, and the escrow must still be `claimed`. `full_refund` = 0 to supplier, `full_release` = 0 to buyer, `split` = both > 0. Only the other party can counter, accept or reject an open offer. Superseded, rejected and accepted offers can't be answered. Accepting creates `settlement.status = "awaiting_signatures"`: nothing has moved.
+5. **Settlement.** A new signature is saved as `submitted` *before* any devnet call. While one is `submitted` or `unknown`, another is refused (409). Re-check: not found and within `lastValidBlockHeight` → `submitted`; past it, never seen, and the escrow still holds the full amount → `failed`; failed on-chain, or not a `Settle` of this escrow → `failed`; RPC error, or settled with other amounts → `unknown`; chain shows exactly the agreed split → `confirmed` (also recorded as the escrow `settle` event). Every reported signature stays in `settlement.attempts`. Only `failed` allows a fresh transaction (fresh signatures).
+6. **Not built.** Withdrawing an offer, renegotiating after acceptance, replacement/return logistics, moving partial settle signatures between devices (both are collected on one computer), auth on `GET`.

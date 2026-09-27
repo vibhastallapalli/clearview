@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type {
+  AgreementState,
   Capture,
   CaptureSession,
   ExtractedDocument,
@@ -38,7 +39,12 @@ interface Db {
   paymentAttempts: PaymentAttempt[];
   /** Orders that had a payment transaction issued, set aside by a demo reset. Kept for the record. */
   archivedOrders: Order[];
+  /** Claim negotiation per order. */
+  agreements: AgreementRecord[];
 }
+
+/** An agreement plus the signed writes applied at each revision (so a retried write is recognised, not re-applied). */
+export type AgreementRecord = AgreementState & { log: { revision: number; key: string }[] };
 
 mkdirSync(UPLOAD_DIR, { recursive: true });
 
@@ -77,6 +83,7 @@ function seed(rehearsal = 1): Db {
     proofs: [],
     paymentAttempts: [],
     archivedOrders: [],
+    agreements: [],
   };
 }
 
@@ -85,6 +92,7 @@ export const db: Db = existsSync(DB_FILE) ? JSON.parse(readFileSync(DB_FILE, "ut
 db.paymentAttempts ??= [];
 db.archivedOrders ??= [];
 db.proofs ??= [];
+db.agreements ??= [];
 for (const o of db.orders) o.escrow ??= null;
 
 export function save() {
@@ -118,6 +126,7 @@ export function resetDb(): Order {
     captures: keep(db.captures),
     scans: keep(db.scans),
     proofs: keep(db.proofs),
+    agreements: keep(db.agreements),
     paymentAttempts: db.paymentAttempts,
     archivedOrders,
   });

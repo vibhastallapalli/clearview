@@ -2,8 +2,8 @@ import { PublicKey, Transaction } from "@solana/web3.js";
 
 /**
  * Phantom, via the injected window.phantom.solana provider. No wallet-adapter:
- * ClearDock only needs connect, the current key, account changes and
- * signTransaction.
+ * ClearDock only needs connect, the current key, account changes,
+ * signTransaction and signMessage (agreement actions).
  *
  * Devnet only. Phantom doesn't tell a dApp which network it is set to, so the
  * UI must tell the user to switch Phantom to devnet (DEVNET_HINT). Every
@@ -23,6 +23,7 @@ interface PhantomProvider {
   connect(opts?: { onlyIfTrusted?: boolean }): Promise<{ publicKey: PublicKey }>;
   disconnect(): Promise<void>;
   signTransaction<T extends Transaction>(tx: T): Promise<T>;
+  signMessage(message: Uint8Array, display?: "utf8"): Promise<{ signature: Uint8Array }>;
   on(event: "connect" | "disconnect" | "accountChanged", handler: (key?: PublicKey | null) => void): void;
   removeListener(event: "connect" | "disconnect" | "accountChanged", handler: (key?: PublicKey | null) => void): void;
 }
@@ -112,4 +113,16 @@ const toBase64 = (bytes: Uint8Array) => btoa(Array.from(bytes, (b) => String.fro
 export async function signSerialized(unsignedBase64: string): Promise<string> {
   const signed = await signTransaction(Transaction.from(fromBase64(unsignedBase64)));
   return toBase64(signed.serialize());
+}
+
+/** Signs text, e.g. agreementMessage() for an agreement action. Moves nothing. Returns the base64 ed25519 signature. */
+export async function signMessage(text: string): Promise<string> {
+  const provider = requirePhantom();
+  if (!provider.publicKey) throw new WalletError("failed", "Connect Phantom first.");
+  try {
+    const { signature } = await provider.signMessage(new TextEncoder().encode(text), "utf8");
+    return toBase64(signature);
+  } catch (err) {
+    throw walletError(err, "message signature");
+  }
 }

@@ -5,7 +5,7 @@ import { db, orderDetail, save } from "./store.ts";
 
 export type EscrowAction = "fund" | "accept_all" | "claim" | "settle";
 
-class EscrowRouteError extends Error {
+export class EscrowRouteError extends Error {
   constructor(
     public status: number,
     public code: ApiError["code"],
@@ -97,7 +97,7 @@ export function decodeEscrowAccount(data: Buffer): DecodedEscrow {
   };
 }
 
-async function rpc<T>(method: string, params: unknown[]): Promise<T> {
+export async function rpc<T>(method: string, params: unknown[]): Promise<T> {
   const url = process.env.SOLANA_RPC_URL || "https://api.devnet.solana.com";
   let res: globalThis.Response;
   try {
@@ -116,7 +116,7 @@ async function rpc<T>(method: string, params: unknown[]): Promise<T> {
   return body.result as T;
 }
 
-interface RpcTransaction {
+export interface RpcTransaction {
   blockTime: number | null;
   meta: {
     err: unknown;
@@ -126,7 +126,7 @@ interface RpcTransaction {
   transaction: { message: { accountKeys: string[] } };
 }
 
-async function verifyTransaction(signature: string, action: EscrowAction, programId: string, escrowAddress: string) {
+export async function verifyTransaction(signature: string, action: EscrowAction, programId: string, escrowAddress: string) {
   const tx = await rpc<RpcTransaction | null>("getTransaction", [
     signature,
     { commitment: "confirmed", maxSupportedTransactionVersion: 0 },
@@ -152,7 +152,7 @@ async function verifyTransaction(signature: string, action: EscrowAction, progra
   return new Date((tx.blockTime ?? Date.now() / 1000) * 1000).toISOString();
 }
 
-async function readEscrow(escrowAddress: string, programId: string): Promise<DecodedEscrow> {
+export async function readEscrow(escrowAddress: string, programId: string): Promise<DecodedEscrow> {
   const info = await rpc<{ value: { data: [string, string]; owner: string } | null }>("getAccountInfo", [
     escrowAddress,
     { encoding: "base64", commitment: "confirmed" },
@@ -162,7 +162,7 @@ async function readEscrow(escrowAddress: string, programId: string): Promise<Dec
   return decodeEscrowAccount(Buffer.from(info.value.data[0], "base64"));
 }
 
-function assertBelongsToOrder(state: DecodedEscrow, order: Order, verifiedWallet: string) {
+export function assertBelongsToOrder(state: DecodedEscrow, order: Order, verifiedWallet: string) {
   const expectedHash = createHash("sha256").update(order.reference).digest();
   if (!state.orderIdHash.equals(expectedHash)) {
     throw new EscrowRouteError(409, "conflict", `Escrow was funded for a different order, not ${order.reference}`);
@@ -185,17 +185,25 @@ function assertBelongsToOrder(state: DecodedEscrow, order: Order, verifiedWallet
 const toOrderDetail = orderDetail;
 
 async function recordEscrowEvent(req: Request, res: Response) {
-  const programId = process.env.ESCROW_PROGRAM_ID;
-  if (!programId) throw new EscrowRouteError(501, "not_implemented", "ESCROW_PROGRAM_ID is not configured");
-
-  const order = db.orders.find((o) => o.id === req.params.id) ;
+  const order = db.orders.find((o) => o.id === req.params.id);
   if (!order) throw new EscrowRouteError(404, "not_found", `Order ${req.params.id} not found`);
-  const supplier = db.suppliers.find((s) => s.id === order.supplierId);
-  if (!supplier?.verified) throw new EscrowRouteError(409, "conflict", "Supplier wallet is not verified");
 
   const { action, signature } = req.body ?? {};
-  const escrowAddress: unknown = req.body?.escrowAddress ?? order.escrow?.escrowAddress;
   if (!ACTIONS.includes(action)) throw new EscrowRouteError(400, "bad_request", `action must be one of ${ACTIONS.join(", ")}`);
+  await applyEscrowEvent(order, action, signature, req.body?.escrowAddress);
+  res.json(toOrderDetail(order));
+}
+
+/**
+ * Verifies an escrow transaction on devnet (program, escrow, instruction, order binding) and refreshes
+ * order.escrow from the chain. Returns the escrow as read from the chain.
+ */
+export async function applyEscrowEvent(order: Order, action: EscrowAction, signature: unknown, escrowAddressIn?: unknown): Promise<DecodedEscrow> {
+  const programId = process.env.ESCROW_PROGRAM_ID;
+  if (!programId) throw new EscrowRouteError(501, "not_implemented", "ESCROW_PROGRAM_ID is not configured");
+  const supplier = db.suppliers.find((s) => s.id === order.supplierId);
+  if (!supplier?.verified) throw new EscrowRouteError(409, "conflict", "Supplier wallet is not verified");
+  const escrowAddress: unknown = escrowAddressIn ?? order.escrow?.escrowAddress;
   if (!isBase58(signature, 64, 88)) throw new EscrowRouteError(400, "bad_request", "signature must be a base58 transaction signature");
   if (!isBase58(escrowAddress, 32, 44)) throw new EscrowRouteError(400, "bad_request", "escrowAddress is required for the first event");
   if (order.escrow && order.escrow.escrowAddress !== escrowAddress) {
@@ -203,7 +211,7 @@ async function recordEscrowEvent(req: Request, res: Response) {
   }
 
   const events = order.escrow?.events ?? [];
-  const alreadyRecorded = events.some((e) => e.signature === signature);
+  const alreadyRecorded = events.some((e) => e.signature === signature && e.action === action);
   const at = alreadyRecorded ? null : await verifyTransaction(signature, action, programId, escrowAddress);
 
   const state = await readEscrow(escrowAddress, programId);
@@ -227,7 +235,7 @@ async function recordEscrowEvent(req: Request, res: Response) {
   };
   order.updatedAt = new Date().toISOString();
   save();
-  res.json(toOrderDetail(order));
+  return state;
 }
 
 export const escrowRouter = Router();

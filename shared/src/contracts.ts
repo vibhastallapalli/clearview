@@ -350,37 +350,179 @@ export interface ClaimLine {
   reason: "missing" | "wrong_item" | "damaged" | "other";
 }
 
-export interface Claim {
-  id: string;
-  orderId: string;
-  scanId: string;
-  lines: ClaimLine[];
-  /** Lines the buyer accepted; released to the supplier immediately. */
-  acceptedMinor: number;
-  claimedMinor: number;
-  filedAt: string;
-}
+// ---------- Agreement: negotiating a claimed (held) escrow amount ----------
+//
+// After the buyer claims on-chain, buyer and supplier negotiate how to split the held amount, then both
+// sign one settle transaction. Agreement reached ≠ signed ≠ submitted ≠ confirmed: only a settle
+// transaction the server verified on devnet with the accepted split is "confirmed". Offers never move money.
+// All amounts are integer token minor units (CDT, 2 decimals).
+//
+// Identity: every write except claim confirmation carries `walletSignature`, the party's Phantom
+// signMessage over agreementMessage(orderId, write). The server checks it against the buyer/supplier
+// wallets stored on the verified escrow. It proves which wallet acted, not which person or device.
 
-export type SettlementKind =
-  | "full_refund"
-  | "full_release"
-  | "split"
-  | "replacement"
-  | "cancel_with_return";
+export type Party = "buyer" | "supplier";
 
-export interface SettlementOffer {
+/** Monetary splits only; replacement/return logistics are deferred. */
+export type AgreementOfferKind = "full_refund" | "full_release" | "split";
+
+/** open → accepted | rejected | superseded (by a counter). Offers are immutable once made; a counter is a new offer. */
+export type AgreementOfferStatus = "open" | "accepted" | "rejected" | "superseded";
+
+export interface AgreementOffer {
   id: string;
-  claimId: string;
-  proposedBy: "buyer" | "supplier";
-  kind: SettlementKind;
-  /** toSupplierMinor + toBuyerMinor must equal the claim's locked amount. */
+  /** 1, 2, 3… in the order offers were made. */
+  version: number;
+  proposedBy: Party;
+  kind: AgreementOfferKind;
   toSupplierMinor: number;
   toBuyerMinor: number;
-  requiresReturn: boolean;
-  expiresAt: string;
-  signatures: { buyer: string | null; supplier: string | null };
-  status: "open" | "accepted" | "rejected" | "expired" | "executed";
+  status: AgreementOfferStatus;
+  /** The offer this one counters, if any. */
+  replacesOfferId: string | null;
+  createdAt: string;
+  respondedBy: Party | null;
+  respondedAt: string | null;
 }
+
+/**
+ * The buyer's reviewed claim, saved before (or after) the on-chain claim so any browser can recover it.
+ * prepared: saved, on-chain claim not verified yet. filed: the claim transaction was verified on devnet.
+ */
+export interface AgreementClaim {
+  status: "prepared" | "filed";
+  /** The station scan the lines were reviewed from. Never replaced by a newer scan. */
+  scanId: string;
+  evidenceRevision: number;
+  lines: ClaimLine[];
+  /** Sum of lines; must equal what the on-chain claim holds. */
+  claimedMinor: number;
+  /** Phone proof ids the buyer points to (raw photos; never assessed by AI). */
+  proofIds: string[];
+  preparedAt: string;
+  /** Set when filed: the verified claim transaction and what the chain held right after it. */
+  claimSignature: string | null;
+  filedAt: string | null;
+  chain: { escrowAddress: string; heldMinor: number; releasedMinor: number; refundedMinor: number } | null;
+}
+
+/**
+ * awaiting_signatures: agreed, nothing sent. submitted: a settle signature was reported, not seen on devnet yet.
+ * unknown: its outcome couldn't be established (RPC error, or it settled with other amounts). Don't send another.
+ * failed: proven not to move the held funds (failed on-chain, not a settle of this escrow, or expired without
+ *   landing while the escrow still holds the amount). A fresh transaction with fresh signatures may be sent.
+ * confirmed: the server verified the settle on devnet with exactly the accepted split.
+ */
+export type SettlementStatus = "awaiting_signatures" | "submitted" | "unknown" | "failed" | "confirmed";
+
+export interface SettlementAttempt {
+  signature: string;
+  lastValidBlockHeight: number;
+  status: Exclude<SettlementStatus, "awaiting_signatures">;
+  error: string | null;
+  reportedBy: Party;
+  at: string;
+}
+
+export interface AgreementSettlement {
+  offerId: string;
+  status: SettlementStatus;
+  /** The latest reported signature (the one status describes). */
+  signature: string | null;
+  error: string | null;
+  updatedAt: string;
+  /** Every settle signature ever reported for this agreement, oldest first. */
+  attempts: SettlementAttempt[];
+}
+
+export interface AgreementState {
+  orderId: string;
+  /** Bumps on every change. Writes carry expectedRevision; a stale one gets 409 conflict. */
+  revision: number;
+  claim: AgreementClaim | null;
+  /** Newest first, including superseded and rejected ones. */
+  offers: AgreementOffer[];
+  /** The open offer, or the accepted one. Null when none. */
+  currentOfferId: string | null;
+  /** Who must act next. Null when either may (filed claim, no open offer) or nobody (no filed claim, agreed). */
+  nextActor: Party | null;
+  settlement: AgreementSettlement | null;
+}
+
+/** What a party signs and POSTs. The request body is the write plus `walletSignature` (base64 ed25519). */
+export type AgreementWrite =
+  | {
+      action: "prepare_claim";
+      as: "buyer";
+      expectedRevision: number;
+      scanId: string;
+      evidenceRevision: number;
+      lines: ClaimLine[];
+      claimedMinor: number;
+      proofIds: string[];
+    }
+  | {
+      action: "propose";
+      as: Party;
+      expectedRevision: number;
+      kind: AgreementOfferKind;
+      toSupplierMinor: number;
+      toBuyerMinor: number;
+      /** The open offer this counters; null for a first offer or after a rejection. */
+      replacesOfferId: string | null;
+    }
+  | {
+      action: "accept" | "reject";
+      as: Party;
+      expectedRevision: number;
+      /** The exact offer reviewed: refused if any of these no longer match. */
+      offerId: string;
+      version: number;
+      toSupplierMinor: number;
+      toBuyerMinor: number;
+    }
+  | {
+      /** Report a broadcast settle transaction. The same signature again = re-check on devnet. */
+      action: "record_settlement";
+      as: Party;
+      offerId: string;
+      signature: string;
+      lastValidBlockHeight: number;
+    };
+
+export type AgreementRequest = AgreementWrite & { walletSignature: string };
+
+/**
+ * The exact text a party's wallet signs for a write. Fields are listed in a fixed order, so the browser
+ * and the server produce the same bytes from the same write.
+ */
+export function agreementMessage(orderId: string, w: AgreementWrite): string {
+  const fields: unknown[] =
+    w.action === "prepare_claim"
+      ? [w.as, w.expectedRevision, w.scanId, w.evidenceRevision, w.claimedMinor, w.proofIds, w.lines.map((l) => [l.sku, l.description, l.claimedMinor, l.reason])]
+      : w.action === "propose"
+        ? [w.as, w.expectedRevision, w.kind, w.toSupplierMinor, w.toBuyerMinor, w.replacesOfferId]
+        : w.action === "record_settlement"
+          ? [w.as, w.offerId, w.signature, w.lastValidBlockHeight]
+          : [w.as, w.expectedRevision, w.offerId, w.version, w.toSupplierMinor, w.toBuyerMinor];
+  return [
+    "ClearDock agreement (Solana devnet, test token). Signing this message moves no funds.",
+    `order: ${orderId}`,
+    `action: ${w.action}`,
+    `details: ${JSON.stringify(fields)}`,
+  ].join("\n");
+}
+
+/** API paths. Every response is the whole AgreementState. */
+export const AGREEMENT_PATHS = {
+  state: (orderId: string) => `/api/orders/${orderId}/agreement`,
+  claim: (orderId: string) => `/api/orders/${orderId}/agreement/claim`,
+  claimConfirm: (orderId: string) => `/api/orders/${orderId}/agreement/claim/confirm`,
+  offers: (orderId: string) => `/api/orders/${orderId}/agreement/offers`,
+  accept: (orderId: string, offerId: string) => `/api/orders/${orderId}/agreement/offers/${offerId}/accept`,
+  reject: (orderId: string, offerId: string) => `/api/orders/${orderId}/agreement/offers/${offerId}/reject`,
+  settlement: (orderId: string) => `/api/orders/${orderId}/agreement/settlement`,
+};
 
 // ---------- API envelopes ----------
 
