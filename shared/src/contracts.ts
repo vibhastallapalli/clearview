@@ -20,7 +20,7 @@ export type Currency = "USD";
 /** Units we can convert between deterministically. */
 export type Unit = "bag" | "box" | "unit" | "g" | "kg";
 
-export type AnalysisSource = "gemini" | "mock";
+export type AnalysisSource = "gemini" | "mock" | "yolo";
 
 // ---------- Suppliers ----------
 
@@ -122,6 +122,8 @@ export interface ScanResult {
   orderId: string;
   captureId: string;
   observed: ObservedItem[];
+  normalCount?: number;
+  damagedCount?: number;
   /** Packages or labels the model could not read. Non-empty means human review. */
   unreadable: string[];
   notes: string;
