@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import type { EscrowRecord, OrderDetail } from "@cleardock/shared";
+import type { EscrowRecord, OrderDetail, RemedySchedule } from "@cleardock/shared";
 import { ApiRequestError } from "../api";
 import { missingReason, type Line } from "../escrow/demo";
 import { WalletError } from "../wallet/phantom";
@@ -8,7 +8,7 @@ import { claimWrite } from "./claim";
 import { isConflict, isNetwork, isUnavailable, isWrongWallet, type AgreementApi } from "./client";
 import type { AgreementWrite, Party } from "./contract";
 import { SimulatedAgreementApi, WALLETS, fakeSign } from "./fixture";
-import { OFFER_CHANGED, currentOffer, heldMinor, offerError, parseAmountToMinor, reviewedFrom, settlePlan, splitFor, viewFor } from "./model";
+import { OFFER_CHANGED, belowSchedule, currentOffer, heldMinor, remedyPrefill, offerError, parseAmountToMinor, reviewedFrom, settlePlan, splitFor, viewFor } from "./model";
 import { AgreementSession, UNAVAILABLE } from "./session";
 import { WrongWalletError, type Signer } from "./signer";
 
@@ -51,8 +51,9 @@ const reviewedLines: Line[] = [1, 2, 3].map((i) => ({
 }));
 const detail = { order: { id: ORDER, latestScanId: "scan_1" }, proofs: [{ id: "prf_1", stationScanId: "scan_1" }, { id: "prf_old", stationScanId: "scan_0" }] } as unknown as OrderDetail;
 
-async function filed() {
+async function filed(remedies?: RemedySchedule) {
   const api = new SimulatedAgreementApi();
+  if (remedies) api.schedule = { remedies, termsVersion: 2 };
   const buyer = new AgreementSession(api, ORDER, device("buyer"));
   const supplier = new AgreementSession(api, ORDER, device("supplier"));
   await buyer.refresh();
@@ -327,4 +328,47 @@ test("the scan suggests, the buyer confirms: an override needs a reason and is s
   assert.equal(w.claimedMinor, 2000);
   assert.ok(await buyer.write(w));
   assert.equal((await api.get(ORDER)).claim?.decisions[1].overrideReason, "bag torn");
+});
+
+test("the first offer is pre-filled from the signed remedy schedule, with its per-line basis", async () => {
+  const { buyer } = await filed({ missing: 60, damaged: 100, wrong_item: 100 });
+  const r = buyer.state!.remedy!;
+  assert.deepEqual([r.termsVersion, r.toBuyerMinor, r.toSupplierMinor], [2, 600, 400]);
+  assert.deepEqual(r.basis, [{ description: "Product A · unit 3", reason: "missing", claimedMinor: 1000, refundPercent: 60, refundMinor: 600 }]);
+  assert.deepEqual(remedyPrefill(r, 1000), { kind: "split", toSupplierMinor: 400 });
+  assert.equal(remedyPrefill(r, 999), null, "a schedule that doesn't fit what devnet holds isn't pre-filled");
+  assert.equal(remedyPrefill(null, 1000), null);
+  assert.equal(remedyPrefill({ ...r, toBuyerMinor: 1000, toSupplierMinor: 0 }, 1000)!.kind, "full_refund");
+  assert.equal(remedyPrefill({ ...r, toBuyerMinor: 0, toSupplierMinor: 1000 }, 1000)!.kind, "full_release");
+  // The pre-fill is only an offer: nothing is proposed or paid until a party signs one.
+  assert.equal(buyer.state!.offers.length, 0);
+});
+
+test("offers refunding less than the schedule are flagged, and still accepted when both sign", async () => {
+  const { buyer, supplier } = await filed({ missing: 60, damaged: 100, wrong_item: 100 });
+  const r = buyer.state!.remedy;
+  assert.match(belowSchedule(500, r)!, /^Below the signed remedy schedule \(terms v2\): \$1\.00 less back to the buyer than the schedule's \$6\.00\.$/);
+  assert.equal(belowSchedule(600, r), null);
+  assert.equal(belowSchedule(1000, r), null);
+  await supplier.propose("supplier", "split", 500, 500);
+  await buyer.refresh();
+  await buyer.respond("buyer", reviewedFrom(buyer.state!, currentOffer(buyer.state!)!), true);
+  assert.equal(currentOffer(buyer.state!)!.status, "accepted");
+});
+
+test("no signed schedule (legacy or pre-schedule terms, or reason other) means no remedy and no flag, not an error", async () => {
+  const { buyer } = await filed();
+  assert.equal(buyer.state!.remedy, null);
+  assert.equal(belowSchedule(0, buyer.state!.remedy), null);
+
+  const api = new SimulatedAgreementApi();
+  api.schedule = { remedies: { missing: 100, damaged: 100, wrong_item: 100 }, termsVersion: 1 };
+  const s = new AgreementSession(api, ORDER, device("buyer"));
+  await s.refresh();
+  const w = claimWrite(s.state!, detail, reviewedLines, { scanId: "scan_1", revision: 3 });
+  assert.ok(w.action === "prepare_claim");
+  await s.write({ ...w, lines: w.lines.map((l) => ({ ...l, reason: "other" as const })) });
+  await api.confirmClaim(ORDER, "claimSig");
+  await s.refresh();
+  assert.equal(s.state!.remedy, null);
 });
