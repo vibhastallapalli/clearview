@@ -100,6 +100,23 @@ test("validated observations, provenance and exact-image cache", async (t) => {
         await assert.rejects(doc(), /AI output rejected/);
       }
     });
+    await t.test("a case of cans is converted in code, never read as one can", async () => {
+      const doc = () => analyzeDocument({ orderId: "ord-test", docId: "doc-test", kind: "invoice", filename: "t.png", mimeType: "image/png", sha256: "x", data: Buffer.from("case document") });
+      const line = { sku: "PROD-A", description: "Cola 12 oz can, 6-pack", quantity: 2, unit: "box", packSize: 6, unitPriceMinor: 600, sourceText: "2 x 6-pack @ $6.00", confidence: 0.95 };
+      const raw = { lines: [line], totalMinor: 1200, warnings: [], embeddedInstructions: [], paymentAddress: null };
+      respond(raw);
+      const ok = await doc();
+      assert.deepEqual([ok.lines[0].quantity, ok.lines[0].unit, ok.lines[0].unitPriceMinor, ok.lines[0].sku], [12, "unit", 100, "PROD-A"]);
+      assert.deepEqual(ok.warnings, []);
+      for (const [patch, why] of [[{ packSize: null }, /size not stated/], [{ unitPriceMinor: 599 }, /does not divide evenly/]] as const) {
+        respond({ ...raw, lines: [{ ...line, ...patch }] });
+        const result = await doc();
+        assert.equal(result.lines[0].sku, null);
+        assert.match(result.warnings.join(), why);
+      }
+      respond({ ...raw, totalMinor: 1500 });
+      assert.match((await doc()).warnings.join(), /differs from the sum of the lines, 1200/);
+    });
     await t.test("no key is explicitly mock and never cached Gemini", async () => {
       delete process.env.GEMINI_API_KEY;
       const result = await scan();
