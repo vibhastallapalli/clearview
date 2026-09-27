@@ -13,6 +13,7 @@ import {
   type ExtractedDocument,
   type Order,
   type OrderDetail,
+  type ScanResult,
   type SensorReading,
 } from "@cleardock/shared";
 import { db, id, resetDb, save, UPLOAD_DIR } from "./store.ts";
@@ -98,6 +99,11 @@ async function ingestCapture(args: {
   file: Express.Multer.File;
   sensors: SensorReading[];
   mockScenario?: MockScenario;
+  yolo?: {
+    totalCount: number;
+    normalCount: number;
+    damagedCount: number;
+};
 }) {
   const { order, file } = args;
   if (!file.mimetype.startsWith("image/")) throw new HttpError(400, "bad_request", "Capture must be an image");
@@ -123,7 +129,27 @@ async function ingestCapture(args: {
   save();
 
   try {
-    const scan = await analyzeScan({
+    const scan: ScanResult = args.yolo
+  ? {
+      id: id("scan"),
+      orderId: order.id,
+      captureId,
+      observed: [
+        {
+          sku: "PROD-A",
+          labelText: "Soda can",
+          count: args.yolo.totalCount,
+          confidence: 1,
+        },
+      ],
+      normalCount: args.yolo.normalCount,
+      damagedCount: args.yolo.damagedCount,
+      unreadable: [],
+      notes: `YOLO: ${args.yolo.totalCount} total, ${args.yolo.normalCount} normal, ${args.yolo.damagedCount} damaged.`,
+      analyzedBy: "yolo",
+      analyzedAt: now(),
+    }
+  : await analyzeScan({
       orderId: order.id,
       captureId,
       scanId: id("scan"),
@@ -261,6 +287,19 @@ app.post(
       if (!Number.isFinite(grams)) throw new HttpError(400, "bad_request", "weightGrams must be a number");
       sensors.push({ kind: "weight", grams, simulated: req.body.simulated === "true", readAt: now() });
     }
+let yolo: { totalCount: number; normalCount: number; damagedCount: number } | undefined;
+
+if (
+  req.body.totalCount !== undefined ||
+  req.body.normalCount !== undefined ||
+  req.body.damagedCount !== undefined
+) {
+  const totalCount = Number(req.body.totalCount);
+  const normalCount = Number(req.body.normalCount);
+  const damagedCount = Number(req.body.damagedCount);
+
+  yolo = { totalCount, normalCount, damagedCount };
+}
     const result = await ingestCapture({
       order: getOrder(String(req.body.orderId)),
       source: "station",
@@ -268,6 +307,7 @@ app.post(
       file: req.file,
       sensors,
       mockScenario: req.body.mockScenario,
+yolo,
     });
     res.status(201).json(result);
   }),

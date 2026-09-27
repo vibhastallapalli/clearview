@@ -143,13 +143,14 @@ export function compareOrder(input: CompareInput): Comparison {
   }
 
   const unreadable = input.scan?.unreadable.length ?? 0;
+  const damagedCount = input.scan?.damagedCount ?? 0;
   const hasUnknown = lines.some((l) => l.verdict === "unknown");
   const hasIssue = lines.some((l) => l.verdict !== "match");
   const missingDocs = !input.purchaseOrder || !input.invoice;
 
   let outcome: ComparisonOutcome;
   if (missingDocs || !haveScan || hasUnknown || unreadable > 0) outcome = "needs_info";
-  else if (hasIssue) outcome = "discrepancy";
+  else if (hasIssue || damagedCount > 0) outcome = "discrepancy";
   else outcome = "match";
 
   const sum = (m: Map<string, Tally>) =>
@@ -169,7 +170,12 @@ export function compareOrder(input: CompareInput): Comparison {
     orderedTotalMinor: sum(po),
     billedTotalMinor: sum(inv),
     undisputedMinor,
-    summary: summarize(outcome, lines, { missingDocs, haveScan, unreadable }),
+    summary: summarize(outcome, lines, {
+  missingDocs,
+  haveScan,
+  unreadable,
+  damagedCount,
+}),
     computedAt: input.now ?? new Date().toISOString(),
   };
 }
@@ -177,12 +183,27 @@ export function compareOrder(input: CompareInput): Comparison {
 function summarize(
   outcome: ComparisonOutcome,
   lines: ComparisonLine[],
-  ctx: { missingDocs: boolean; haveScan: boolean; unreadable: number },
+  ctx: {
+    missingDocs: boolean;
+    haveScan: boolean;
+    unreadable: number;
+    damagedCount: number;
+  },
 ): string {
   if (ctx.missingDocs) return "Upload the purchase order and invoice to compare.";
   if (!ctx.haveScan) return "Paperwork loaded. Capture the delivery to compare.";
-  if (ctx.unreadable > 0) return `${ctx.unreadable} package(s) could not be read. Recapture or review manually.`;
-  if (outcome === "match") return "Order, invoice and delivery agree. Ready for owner review.";
-  const issues = lines.filter((l) => l.verdict !== "match").map((l) => l.explanation);
+  if (ctx.unreadable > 0)
+    return `${ctx.unreadable} package(s) could not be read. Recapture or review manually.`;
+
+  if (ctx.damagedCount > 0)
+    return `${ctx.damagedCount} damaged item(s) detected. Manual review required.`;
+
+  if (outcome === "match")
+    return "Order, invoice and delivery agree. Ready for owner review.";
+
+  const issues = lines
+    .filter((l) => l.verdict !== "match")
+    .map((l) => l.explanation);
+
   return issues.join(" ");
 }
