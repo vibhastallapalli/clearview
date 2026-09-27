@@ -107,6 +107,11 @@ soda dataset and on how existing demo orders are kept.
    On 2026-09-27 that model returned **404 "no longer available to new users"** for our key, so a server
    started with that setting fails every live Gemini call. Remove the line (the code default is
    `gemini-3.8-flash`, which returned real results) or set it to `gemini-3.8-flash`.
+7. `compareOrder` ignores `ExtractedDocument.warnings`. Proposal: `ExtractedDocument.blocking?: string[]`, which
+   `documentFlags` turns into flags. Until then, extraction handles the one dangerous case itself. When the lines add up
+   to **more** than the printed total, every line loses its SKU (`[total mismatch]`), so the comparison is `needs_info`.
+   Example: a case price read as a per-can price, so "1 case of 12 @ $12" becomes 12 × $12 = $144. Tax and shipping only
+   raise the total, so a total above the lines stays a warning.
 
 ## Station-guard (ai/station-guard @ 3c7cfbc)
 
@@ -119,7 +124,7 @@ Cherry-picked onto this branch (it only touches `server/src/ai/**`). Gemini stat
 | Evidence | Kind | Result |
 |---|---|---|
 | Adapter + `compareOrder`: correct, missing, wrong size, wrong brand, extra, covered, unmapped class, empty, repeated frames, disagreeing frames, 11 malformed inputs, duplicate catalog class, cross-check | Unit tests, **synthetic** detector JSON, **provisional** catalog | 12/12 pass |
-| Case → unit conversion, missing pack size, indivisible case price, total mismatch warning | Unit tests, **stubbed** Gemini responses | pass |
+| Case → unit conversion, missing pack size, indivisible case price, total above lines (warning), lines above total (blocks, checked through `compareOrder`) | Unit tests, **stubbed** Gemini responses | pass |
 | `cans_po_en.pdf` (English PO, 1 × 6-pack + 2 cans) | **Live Gemini** `gemini-3.8-flash`, fresh (no cache), 16.2 s | 11/11: 6 × COKE-CLASSIC-12OZ @ 100, 2 × DIET-COKE-12OZ @ 100, total 800 |
 | `cans_invoice_es_no_pack.png` ("1 caja", no pack size) | **Live Gemini**, fresh, 7.1 s | 8/8: case line kept as unknown (never 1 can), Gemini also warned "pack size not printed"; with the PO + synthetic detector scan → `needs_info` as expected |
 | `cans_invoice_es.png` (matching Spanish invoice) | Live Gemini | **Not completed**: 503 "high demand" in run 1, then 429 quota on three later attempts. PO + matching invoice → `match` is unverified live |

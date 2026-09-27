@@ -115,7 +115,21 @@ test("validated observations, provenance and exact-image cache", async (t) => {
         assert.match(result.warnings.join(), why);
       }
       respond({ ...raw, totalMinor: 1500 });
-      assert.match((await doc()).warnings.join(), /differs from the sum of the lines, 1200/);
+      const taxed = await doc();
+      assert.match(taxed.warnings.join(), /more than the sum of the lines, 1200/);
+      assert.equal(taxed.lines[0].sku, "PROD-A", "tax or shipping only warns");
+    });
+    await t.test("a case price misread as a per-can price cannot match at the inflated amount", async () => {
+      const doc = () => analyzeDocument({ orderId: "ord-test", docId: "doc-test", kind: "invoice", filename: "t.png", mimeType: "image/png", sha256: "x", data: Buffer.from("case document") });
+      // Printed: "1 case of 12 @ $12.00, total $12.00". Misread: 12 cans @ $12.00 each = $144.00.
+      const misread = { sku: "PROD-A", description: "Cola 12 oz can", quantity: 12, unit: "unit", packSize: null, unitPriceMinor: 1200, sourceText: "1 case (12 cans) @ $12.00", confidence: 0.95 };
+      respond({ lines: [misread], totalMinor: 1200, warnings: [], embeddedInstructions: [], paymentAddress: null });
+      const result = await doc();
+      assert.equal(result.lines[0].sku, null);
+      assert.match(result.warnings.join(), /more than the printed total/);
+      const twelve = { observed: [{ sku: "PROD-A", labelText: "Cola", count: 12, confidence: 1 }], unreadable: [], notes: "" } as any;
+      const cmp = compareOrder({ orderId: "ord-test", evidenceRevision: 1, purchaseOrder: result, invoice: result, scan: twelve });
+      assert.equal(cmp.outcome, "needs_info");
     });
     await t.test("no key is explicitly mock and never cached Gemini", async () => {
       delete process.env.GEMINI_API_KEY;

@@ -324,13 +324,20 @@ function validateDocument(v: any) {
     fail("missing or invalid embedded instructions");
   if (v.paymentAddress !== null && typeof v.paymentAddress !== "string") fail("invalid payment address");
   const warnings: string[] = Array.isArray(v.warnings) ? v.warnings.map(String) : [];
-  const lines: ExtractedLine[] = v.lines.map((l: any) => validateLine(l, warnings));
+  let lines: ExtractedLine[] = v.lines.map((l: any) => validateLine(l, warnings));
   const totalMinor = Number.isSafeInteger(v.totalMinor) && v.totalMinor >= 0 ? v.totalMinor : null;
   const counts = lines.map((l) => (l.sku === null ? null : toUnitCount(l)));
   if (totalMinor !== null && counts.every((c) => c !== null)) {
     const sum = lines.reduce((acc, l, i) => acc + counts[i]! * l.unitPriceMinor, 0);
-    if (sum !== totalMinor)
-      warnings.push(`Printed total ${totalMinor} cents differs from the sum of the lines, ${sum} cents (tax, shipping or a missed line?).`);
+    if (sum < totalMinor)
+      warnings.push(`Printed total ${totalMinor} cents is more than the sum of the lines, ${sum} cents (tax, shipping or a missed line?).`);
+    // Tax and shipping only raise the total. Lines worth MORE than it mean a misread (e.g. a case price read
+    // as a per-can price) or an unlisted discount. compareOrder ignores warnings, so the lines lose their SKU
+    // and the comparison is needs_info instead of a confident match at the inflated amount.
+    if (sum > totalMinor) {
+      warnings.push(`Lines add up to ${sum} cents, more than the printed total of ${totalMinor} cents. Quantities or prices were misread. Needs manual review.`);
+      lines = lines.map((l) => ({ ...l, sku: null, description: `[total mismatch] ${l.description}`, confidence: 0 }));
+    }
   }
   const address = typeof v.paymentAddress === "string" ? v.paymentAddress.trim() : "";
   return {
