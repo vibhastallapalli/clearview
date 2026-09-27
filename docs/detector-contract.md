@@ -77,22 +77,36 @@ const scan: ScanResult = { id, orderId: order.id, captureId, analyzedBy: "detect
 // then as today: db.scans.push(scan); latestScanId; evidenceChanged(order)
 ```
 
-Skip `analyzeScan` (Gemini) when `detections` is present. A rejected result is a 400 with the adapter's
-message. It must never fall back to Gemini silently.
+**Path selection, per capture:** the existing Gemini station path stays exactly as it is and remains the
+default. Only a capture that carries a `detections` field uses the detector path, and that capture skips
+`analyzeScan`. A rejected detector result is a 400 with the adapter's message. It never silently falls back
+to Gemini, and Gemini never fills in for it.
+
+**Provenance:** do not wire this until `AnalysisSource` includes `"detector"`. Never store a detector result
+as `"gemini"`, `"mock"` or `"cache"` as a stand-in.
+
+**Catalog:** the adapter and the Gemini prompt read `shared/fixtures/products.json` (still coffee, unchanged).
+`CLEARDOCK_PRODUCTS_FILE=<path>` points one process at another catalog. The soda eval uses it with the
+PROVISIONAL `samples/detector/products.proposed.json`. Nothing global changes until the team agrees on the
+soda dataset and on how existing demo orders are kept.
 
 ## Contract changes requested (Account 1)
 
 1. `AnalysisSource` gains `"detector"`.
 2. `ScanResult.detector?: { model: string; frames: number; latencyMs: number | null; synthetic: boolean }`
    for provenance. Until then it only appears in `notes`.
-3. Catalog: replace `shared/fixtures/products.json` with the agreed can SKUs plus `detectorClasses`
-   (proposal: `samples/detector/products.proposed.json`). This also changes the Gemini prompt's SKU list and
-   the seeded PO/invoice/scan fixtures, which are still coffee.
+3. Catalog, **only after** the team agrees on the soda dataset and hardware confirms real class labels:
+   add the agreed can SKUs with `detectorClasses` (proposal: `samples/detector/products.proposed.json`,
+   every entry marked `provisional`). Keep the coffee SKUs and existing demo orders working. Add, don't replace.
 4. Optional, later: `LineItem.packSize`, so a case keeps its printed price. Until then extraction converts
    "1 × 6-pack @ $6.00" into 6 units @ $1.00. If the case price doesn't divide evenly, or the pack size isn't
    printed, the line goes to review. It is never treated as 1 can.
 5. `compareOrder`: when `scan.unreadable` is non-empty, a line still shows "observed 5 → missing 1".
    The outcome is correctly `needs_info`, but the UI should not present that per-line count as confident.
+6. **Config bug, not a contract change:** `.env.example` (and the local `.env`) set `GEMINI_MODEL=gemini-2.5-flash`.
+   On 2026-09-27 that model returned **404 "no longer available to new users"** for our key, so a server
+   started with that setting fails every live Gemini call. Remove the line (the code default is
+   `gemini-3.8-flash`, which returned real results) or set it to `gemini-3.8-flash`.
 
 ## Station-guard (ai/station-guard @ 3c7cfbc)
 
@@ -106,8 +120,15 @@ Cherry-picked onto this branch (it only touches `server/src/ai/**`). Gemini stat
 |---|---|---|
 | Adapter + `compareOrder`: correct, missing, wrong size, wrong brand, extra, covered, unmapped class, empty, repeated frames, disagreeing frames, 11 malformed inputs, duplicate catalog class, cross-check | Unit tests, **synthetic** detector JSON, **provisional** catalog | 12/12 pass |
 | Case → unit conversion, missing pack size, indivisible case price, total mismatch warning | Unit tests, **stubbed** Gemini responses | pass |
-| Can PO/invoice extraction with live Gemini | – | **Not run**: no `GEMINI_API_KEY` in local `.env` |
+| `cans_po_en.pdf` (English PO, 1 × 6-pack + 2 cans) | **Live Gemini** `gemini-3.8-flash`, fresh (no cache), 16.2 s | 11/11: 6 × COKE-CLASSIC-12OZ @ 100, 2 × DIET-COKE-12OZ @ 100, total 800 |
+| `cans_invoice_es_no_pack.png` ("1 caja", no pack size) | **Live Gemini**, fresh, 7.1 s | 8/8: case line kept as unknown (never 1 can), Gemini also warned "pack size not printed"; with the PO + synthetic detector scan → `needs_info` as expected |
+| `cans_invoice_es.png` (matching Spanish invoice) | Live Gemini | **Not completed**: 503 "high demand" in run 1, then 429 quota on three later attempts. PO + matching invoice → `match` is unverified live |
+| `gemini-2.5-flash` (the model in `.env.example`) | Live Gemini | 404 for all three: model unavailable to this key (see request 6) |
 | Real detector output, real captures, accuracy, latency | – | **Blocked on hardware** |
+
+Raw evidence: `samples/detector/eval-results.gemini-3.8-flash.json` (run 1). Rerun with
+`node --env-file=<private key file> --import tsx samples/detector/eval-docs.mts --write` once quota resets.
+These are 3 synthetic documents on a provisional catalog: evidence the extraction path works, not an accuracy figure.
 
 ### Real-capture evaluation to run once hardware is ready
 
@@ -124,6 +145,7 @@ A few successful demo runs are not an accuracy figure.
   If it's unsure, sees an unknown can, or sees nothing at all, the result says "needs review". It never says "zero".
 - **Plain code** compares ordered vs billed vs seen, and computes any missing value in cents. No AI decides a payment.
 - **People** approve and sign. Phone photos are shown to the supplier as-is. No AI judges them.
-- **Actually tested so far:** the adapter and comparison, using made-up detector outputs, plus extraction logic
-  with simulated Gemini replies. **Not yet tested:** live Gemini on the can documents, and the real detector on
-  real photos. Don't claim detector accuracy yet.
+- **Actually tested so far:** the adapter and comparison, using made-up detector outputs. Live Gemini read the
+  synthetic can PO correctly and refused to guess a case with no pack size. The matching invoice hasn't
+  finished a live run yet (Gemini quota). **Not tested:** the real detector on real photos. Don't claim detector
+  accuracy, and don't call 2 documents an accuracy result.
