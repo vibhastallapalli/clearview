@@ -1,0 +1,76 @@
+{
+  "ranAt": "2026-09-27T06:23:05.330Z",
+  "model": "gemini-3.8-flash",
+  "catalog": "PROVISIONAL products.proposed.json",
+  "results": [
+    {
+      "file": "docs/cans_po_en.pdf",
+      "extractedBy": "gemini",
+      "latencyMs": 16152,
+      "passed": 11,
+      "checks": 11,
+      "mismatches": [],
+      "lines": [
+        {
+          "sku": "COKE-CLASSIC-12OZ",
+          "description": "Coca-Cola Classic 12 fl oz can, 6-pack (1 × 6-pack = 6 units)",
+          "quantity": 6,
+          "unit": "unit",
+          "unitPriceMinor": 100,
+          "sourceText": "Coca-Cola Classic 12 fl oz can, 6-pack 1 pack $6.00 $6.00"
+        },
+        {
+          "sku": "DIET-COKE-12OZ",
+          "description": "Diet Coke 12 fl oz can",
+          "quantity": 2,
+          "unit": "unit",
+          "unitPriceMinor": 100,
+          "sourceText": "Diet Coke 12 fl oz can 2 cans $1.00 $2.00"
+        }
+      ],
+      "totalMinor": 800,
+      "warnings": []
+    },
+    {
+      "file": "docs/cans_invoice_es.png",
+      "error": "Gemini server error 503: {\n  \"error\": {\n    \"code\": 503,\n    \"message\": \"This model is currently experiencing high demand. Spikes in demand are usually temporary. Please try again later.\",\n    \"status\": \"UNAVAILABLE\"\n  }\n}\n",
+      "latencyMs": 11872
+    },
+    {
+      "file": "docs/cans_invoice_es_no_pack.png",
+      "extractedBy": "gemini",
+      "latencyMs": 7112,
+      "passed": 8,
+      "checks": 8,
+      "mismatches": [],
+      "lines": [
+        {
+          "sku": null,
+          "description": "[unreadable] Coca-Cola Clásica lata 355 ml",
+          "quantity": 0,
+          "unit": "unit",
+          "unitPriceMinor": 0,
+          "sourceText": "Coca-Cola Clásica lata 355 ml 1 caja $6.00/caja $6.00"
+        },
+        {
+          "sku": "DIET-COKE-12OZ",
+          "description": "Coca-Cola Light lata 355 ml",
+          "quantity": 2,
+          "unit": "unit",
+          "unitPriceMinor": 100,
+          "sourceText": "Coca-Cola Light lata 355 ml 2 latas $1.00/lata $2.00"
+        }
+      ],
+      "totalMinor": 800,
+      "warnings": [
+        "Pack size not printed for caja on line 1",
+        "Case/pack size not stated, so the number of individual items is unknown for \"Coca-Cola Clásica lata 355 ml 1 caja $6.00/caja $6.00\". Needs manual review."
+      ],
+      "outcome": {
+        "got": "needs_info",
+        "want": "needs_info",
+        "scan": "SYNTHETIC detector fixture"
+      }
+    }
+  ]
+}
