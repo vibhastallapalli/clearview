@@ -39,6 +39,14 @@ export const api = {
       { method: "POST" },
     ),
 
+  /** Test aid: a labelled synthetic photo attached as phone proof (SIMULATED photo; assessed by the configured AI). */
+  sampleProof: (orderId: string, sample: string) =>
+    request<unknown>(`/api/dev/orders/${orderId}/sample-proof`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ sample }),
+    }),
+
   captureSession: (code: string) =>
     request<{ session: { orderId: string; expiresAt: string }; orderReference: string }>(
       `/api/capture-sessions/${code}`,

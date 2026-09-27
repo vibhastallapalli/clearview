@@ -20,6 +20,19 @@ export function ProofPanel({ detail, role }: { detail: OrderDetail; role: "buyer
   const [qr, setQr] = useState<{ img: string; url: string } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [opening, setOpening] = useState(false);
+  const [sample, setSample] = useState("one_missing");
+  const [sending, setSending] = useState(false);
+  const sendSample = async () => {
+    setSending(true);
+    setError(null);
+    try {
+      await api.sampleProof(order.id, sample);
+    } catch (err) {
+      setError(`Sample photo failed: ${(err as Error).message}`);
+    } finally {
+      setSending(false);
+    }
+  };
   const { order, proofs, latestCapture } = detail;
   const hasStationScan = latestCapture?.source === "station" && !!order.comparison;
   const isBuyer = role === "buyer";
@@ -52,6 +65,19 @@ export function ProofPanel({ detail, role }: { detail: OrderDetail; role: "buyer
           ? "Photos from your phone back up the station report for you and the supplier. They don't change the station report, the amounts or the escrow."
           : "Photos the buyer took to back up the station report. They don't change the station report, the amounts or the escrow."}
       </p>
+      {isBuyer && hasStationScan && (
+        <div className="row wrap gap-6">
+          <select value={sample} onChange={(e) => setSample(e.target.value)} disabled={sending} aria-label="Sample photo">
+            <option value="one_missing">Sample: one bag missing</option>
+            <option value="swapped">Sample: bag swapped</option>
+            <option value="label_covered">Sample: label covered</option>
+            <option value="all_correct">Sample: all correct</option>
+          </select>
+          <button className="secondary sm" onClick={sendSample} disabled={sending}>
+            {sending ? "Assessing sample…" : "Use a sample photo"} <span className="sim">SIMULATED</span>
+          </button>
+        </div>
+      )}
       {isBuyer && !hasStationScan && (
         <p className="notice warn">Photo proof attaches to a station scan. Scan the delivery at the receiving station first.</p>
       )}
@@ -97,6 +123,7 @@ function ProofItem({ proof, latestScanId, isBuyer, onRetry }: { proof: PhoneProo
             {d.label}
           </span>
           {d.mock && <span className="sim">MOCK AI</span>}
+          {proof.capture.fixture && <span className="sim">SAMPLE PHOTO · SIMULATED</span>}
           {d.historical && <span className="pill muted pill-xs">Historical · earlier station scan</span>}
           <span className="pill muted pill-xs">AI assessment · evidence only</span>
         </div>

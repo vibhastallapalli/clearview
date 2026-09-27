@@ -2,7 +2,8 @@ import express, { type NextFunction, type Request, type Response } from "express
 import cors from "cors";
 import multer from "multer";
 import { createHash, randomBytes } from "node:crypto";
-import { writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import {
   compareOrder,
@@ -174,7 +175,7 @@ function saveCapture(args: { order: Order; source: CaptureSource; sessionId: str
  * Phone photo = proof for the current station result. Never changes latestScanId, the comparison,
  * evidenceRevision, status, approval, payment or escrow, so it is allowed after payment too.
  */
-async function attachPhoneProof(args: { order: Order; sessionId: string; file: Express.Multer.File; mockScenario?: MockScenario }) {
+async function attachPhoneProof(args: { order: Order; sessionId: string | null; file: Express.Multer.File; mockScenario?: MockScenario; fixture?: string | null }) {
   const { order, file } = args;
   if (!file.mimetype.startsWith("image/")) throw new HttpError(400, "bad_request", "Capture must be an image");
   const stationScan = db.scans.find((s) => s.id === order.latestScanId);
@@ -183,7 +184,7 @@ async function attachPhoneProof(args: { order: Order; sessionId: string; file: E
     throw new HttpError(409, "conflict", "No station scan yet. Phone photos are proof for a station result; scan the delivery at the station first.");
   const comparison = order.comparison;
 
-  const capture = saveCapture({ order, source: "phone", sessionId: args.sessionId, file, sensors: [] });
+  const capture = saveCapture({ order, source: "phone", sessionId: args.sessionId, file, sensors: [], fixture: args.fixture });
   const proof: PhoneProof = {
     id: id("prf"),
     orderId: order.id,
@@ -465,6 +466,26 @@ app.post(
 app.use(escrowRouter);
 
 // ---------- dev ----------
+
+// Test aid: attach a synthetic tray photo as phone proof, labelled as a fixture so the UI shows SIMULATED.
+// The photo is fake; its assessment is whatever the configured AI (live Gemini or mock) says about it.
+const SAMPLE_PROOFS = ["all_correct", "one_missing", "swapped", "label_covered"];
+app.post(
+  "/api/dev/orders/:id/sample-proof",
+  wrap(async (req, res) => {
+    const sample = String(req.body?.sample ?? "");
+    if (!SAMPLE_PROOFS.includes(sample)) throw new HttpError(400, "bad_request", `sample must be one of ${SAMPLE_PROOFS.join(", ")}`);
+    const fixture = `samples/photos/synthetic/${sample}.jpg`;
+    const buffer = readFileSync(fileURLToPath(new URL(`../../${fixture}`, import.meta.url)));
+    const result = await attachPhoneProof({
+      order: getOrder(req.params.id),
+      sessionId: null,
+      file: { buffer, mimetype: "image/jpeg" } as Express.Multer.File,
+      fixture,
+    });
+    res.status(201).json(result);
+  }),
+);
 
 // Rehearse again: archives orders that had a payment transaction, seeds a fresh demo order.
 app.post(
