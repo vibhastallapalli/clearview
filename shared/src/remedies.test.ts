@@ -17,3 +17,16 @@ test("no default for a reason the schedule doesn't cover, or a claim bigger than
   assert.equal(remedyDefault([line(1000, "missing"), line(100, "other")], 1100, DEFAULT_REMEDIES, 1), null);
   assert.equal(remedyDefault([line(1000, "missing")], 999, DEFAULT_REMEDIES, 1), null);
 });
+
+test("terms signed before remedy schedules still hash and sign without crashing, to the same hash as before", async () => {
+  const { canonicalTerms, orderTermsMessage, termsHashOf } = await import("./contracts.ts");
+  const old = {
+    rulesVersion: 1, orderId: "o", reference: "R", network: "devnet" as const, escrowProgramId: "p", mint: "m", buyerWallet: "b", supplierWallet: "s",
+    lines: [{ sku: null, description: "x", quantity: 1, unitPriceMinor: 100 }], totalMinor: 100,
+    inspection: { hours: 72, startsAt: "first_station_scan_after_funding" as const, enforced: false as const }, rules: ["r"],
+  };
+  // The canonical form terms had before schedules existed: no remedies element.
+  assert.equal(canonicalTerms(old), JSON.stringify([1, "o", "R", "devnet", "p", "m", "b", "s", [[null, "x", 1, 100]], 100, [72, "first_station_scan_after_funding", false], ["r"]]));
+  assert.match(orderTermsMessage("o", 1, await termsHashOf(old), old), /remedies: none/);
+  assert.notEqual(await termsHashOf({ ...old, remedies: DEFAULT_REMEDIES }), await termsHashOf(old));
+});

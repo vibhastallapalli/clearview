@@ -438,8 +438,8 @@ export interface OrderTerms {
     /** Nothing enforces the deadline, on-chain or in the app. */
     enforced: false;
   };
-  /** What the buyer gets back per claimed issue. */
-  remedies: RemedySchedule;
+  /** What the buyer gets back per claimed issue. Absent on terms signed before schedules existed (rules v1). */
+  remedies?: RemedySchedule;
   rules: string[];
 }
 
@@ -525,7 +525,8 @@ export function canonicalTerms(t: OrderTerms): string {
     t.lines.map((l) => [l.sku, l.description, l.quantity, l.unitPriceMinor]),
     t.totalMinor,
     [t.inspection.hours, t.inspection.startsAt, t.inspection.enforced],
-    REMEDY_ISSUES.map((i) => [i, t.remedies[i]]),
+    // Only terms that have a schedule hash it, so hashes of terms signed before schedules existed still match.
+    ...(t.remedies ? [REMEDY_ISSUES.map((i) => [i, t.remedies![i]])] : []),
     t.rules,
   ]);
 }
@@ -549,7 +550,9 @@ export function orderTermsMessage(orderId: string, version: number, termsHash: s
     `buyer: ${t.buyerWallet}`,
     `supplier: ${t.supplierWallet}`,
     `inspection: ${t.inspection.hours} h from the first station scan after funding (not enforced)`,
-    `remedies (refund of the claimed line's price): missing ${t.remedies.missing}%, damaged ${t.remedies.damaged}%, wrong item ${t.remedies.wrong_item}%`,
+    t.remedies
+      ? `remedies (refund of the claimed line's price): missing ${t.remedies.missing}%, damaged ${t.remedies.damaged}%, wrong item ${t.remedies.wrong_item}%`
+      : "remedies: none (terms from before remedy schedules)",
     "claimed amounts stay held until both sign a settlement; no timeout, no arbitration",
   ].join("\n");
 }
