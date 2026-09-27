@@ -53,7 +53,6 @@ export const api = {
       { method: "POST" },
     ),
 
-  /** Test aid: a labelled synthetic photo attached as phone proof (SIMULATED photo; assessed by the configured AI). */
   /** Test aid until the station hardware exists: an uploaded photo scanned as the station camera (SIMULATED). */
   simulateStationPhoto: (orderId: string, image: File) => {
     const fd = new FormData();
@@ -61,6 +60,7 @@ export const api = {
     return request<{ order: OrderDetail }>(`/api/dev/orders/${orderId}/station-photo`, { method: "POST", body: fd });
   },
 
+  /** Test aid: a labelled synthetic photo attached as phone proof (SIMULATED photo; no AI reads phone proof). */
   sampleProof: (orderId: string, sample: string) =>
     request<unknown>(`/api/dev/orders/${orderId}/sample-proof`, {
       method: "POST",
