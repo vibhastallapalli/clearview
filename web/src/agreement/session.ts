@@ -51,9 +51,12 @@ export class AgreementSession {
     this.onChange();
   }
 
-  async refresh(): Promise<void> {
+  /** True only if this call read the server. Anything about to be signed must require true (fail closed). */
+  async refresh(): Promise<boolean> {
     try {
       this.set(await this.api.get(this.orderId));
+      this.onChange();
+      return true;
     } catch (err) {
       if (isUnavailable(err)) this.status = "unavailable";
       else if (!this.state) {
@@ -63,6 +66,7 @@ export class AgreementSession {
       // With state already shown, a failed poll keeps it; the next poll tries again.
     }
     this.onChange();
+    return false;
   }
 
   propose(as: Party, kind: AgreementOfferKind, toSupplierMinor: number, toBuyerMinor: number) {

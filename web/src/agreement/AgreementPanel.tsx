@@ -305,7 +305,7 @@ function Negotiation({ detail, session, st, held }: { detail: OrderDetail; sessi
         chain: { action: "settle", toSupplier: plan.toSupplier, toBuyer: plan.toBuyer },
         // Re-read the agreement and the chain right before signing: never sign a split that changed.
         precheck: async () => {
-          await session.refresh();
+          if (!(await session.refresh())) throw new Error("Couldn't re-read the agreement from ClearDock, so nothing was signed. Try again.");
           const { order } = await api.order(orderId);
           const again = settlePlan(session.state!, order.escrow, reviewed);
           if (!again.ok) throw new Error(again.reason);

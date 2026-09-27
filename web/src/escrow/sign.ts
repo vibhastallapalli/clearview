@@ -119,7 +119,7 @@ export async function signAndSend(request: SignRequest, detail: OrderDetail, hoo
   } catch (err) {
     if (err instanceof TransactionExpiredBlockheightExceededError)
       throw new SentTransactionError(
-        `Transaction ${signature} expired without landing. Nothing moved; a fresh transaction needs fresh signatures.`,
+        `Transaction ${signature} expired before devnet confirmed it. Re-check it on the order page before signing again.`,
         signature,
         "failed",
       );

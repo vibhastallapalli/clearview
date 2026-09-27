@@ -37,10 +37,10 @@ export function withSavedClaim(
     rows: [...req.rows, ["Before signing", "Your buyer wallet signs the claimed lines for ClearDock (moves nothing)"]],
     precheck: async () => {
       if (!from) throw new Error("Review the station report on this device before claiming.");
-      await session.refresh();
+      const read = await session.refresh();
       if (session.status === "unavailable") throw new Error("This server can't save the claim, so nothing was signed.");
       const st = session.state;
-      if (!st) throw new Error(`Couldn't load the agreement: ${session.loadError ?? "no reply"}. Nothing was signed.`);
+      if (!st || !read) throw new Error(`Couldn't load the agreement: ${session.loadError ?? "no reply"}. Nothing was signed.`);
       if (st.claim?.status === "filed") throw new Error("A claim is already filed for this order.");
       const saved = await session.write(claimWrite(st, detail, lines, from));
       if (!saved) throw new Error(`The claim wasn't saved, so nothing was signed. ${session.notice?.text ?? ""}`.trim());

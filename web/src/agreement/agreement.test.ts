@@ -298,3 +298,13 @@ test("error classes: unavailable server, conflicts, wrong wallet, gateway errors
   await s.propose("buyer", "full_refund", 0, 1000);
   assert.equal(s.notice?.text, UNAVAILABLE);
 });
+
+test("a failed fresh read before signing fails closed even when older state is shown", async () => {
+  const { api, buyer } = await filed();
+  assert.equal(await buyer.refresh(), true);
+  const down: AgreementApi = { ...api, get: async () => { throw new ApiRequestError("Network down", 0); }, send: api.send.bind(api), confirmClaim: api.confirmClaim.bind(api), recheckSettlement: api.recheckSettlement.bind(api) };
+  const s = new AgreementSession(down, ORDER, device("buyer"));
+  s.state = buyer.state;
+  assert.equal(await s.refresh(), false); // the precheck throws on false, so nothing is signed
+  assert.ok(s.state); // the stale state is still shown, but it isn't trusted for signing
+});
