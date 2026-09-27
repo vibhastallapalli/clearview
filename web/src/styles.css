@@ -447,3 +447,17 @@ select { font: inherit; font-size: 14px; color: var(--ink); background: rgba(255
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; }
 }
+
+/* Phone photo proof (web/src/proof) */
+.proof { display: flex; gap: 14px; padding-top: 14px; border-top: 1px solid rgba(20, 30, 50, 0.08); }
+.proof.historical { opacity: 0.72; }
+.proof-photo { flex: none; width: 112px; height: 112px; border-radius: 12px; overflow: hidden; background: rgba(20, 30, 50, 0.08); }
+.proof-photo img { width: 100%; height: 100%; object-fit: cover; }
+.proof-body { display: flex; flex-direction: column; gap: 6px; min-width: 0; flex: 1; }
+.proof-body .caption { word-break: break-all; }
+.proof-findings { margin: 0; padding-left: 18px; }
+.spinner.spinner-xs { width: 10px; height: 10px; border-width: 2px; }
+@media (max-width: 520px) {
+  .proof { flex-direction: column; }
+  .proof-photo { width: 100%; height: 180px; }
+}

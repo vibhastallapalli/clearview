@@ -16,6 +16,7 @@ import {
   physicalRequest,
   proposeRequest,
   rejected,
+  scanned,
   shortSig,
   totalOf,
   txUrl,
@@ -27,6 +28,7 @@ import {
   type Tone,
 } from "./demo";
 import { useDemo } from "./DemoProvider";
+import { ProofPanel } from "../proof/ProofPanel";
 
 const VERDICT: Record<LineVerdict, (discrepancyMinor: number) => [string, Tone]> = {
   match: () => ["✓ Match", "ok"],
@@ -73,6 +75,8 @@ export function EscrowWorkspace({ detail }: { detail: OrderDetail }) {
   const st: DemoState = onChain ? { ...local, esc: escFrom(onChain) } : local;
 
   const isBuyer = role === "buyer";
+  // The station scan is the authoritative delivery evidence; phone photos are only proof for it.
+  const stationReport = detail.latestCapture?.source === "station" && !!detail.latestScan && !!detail.order.comparison;
   const cpKey = isBuyer ? "supplier" : "buyer";
   const cp = PARTY[cpKey];
   const total = onChain?.totalMinor ?? totalOf(st.lines);
@@ -94,7 +98,7 @@ export function EscrowWorkspace({ detail }: { detail: OrderDetail }) {
     ? `${detail.supplier.name} · verified wallet ${short(detail.supplier.walletAddress)} · ${items}`
     : `${PARTY.buyer.name} (synthetic) · buyer wallet ${onChain ? short(onChain.buyer) : PARTY.buyer.wallet} · ${items}`;
   const wait = onChain
-    ? waitCard(st, role, cp.name, curOffer?.label)
+    ? waitCard(st, role, cp.name, curOffer?.label, stationReport ? detail.order.comparison!.summary : null)
     : isBuyer
       ? null
       : (["Waiting on buyer", `${cp.name} hasn't funded the escrow yet.`, "Once they lock the order total on devnet, you're guaranteed payment for every line they accept."] as [string, string, string]);
@@ -166,14 +170,32 @@ export function EscrowWorkspace({ detail }: { detail: OrderDetail }) {
           {onChain && st.step === "delivered" && isBuyer && (
             <section className="card">
               <span className="eyebrow">Step 1 · Receiving</span>
-              <h2>Your delivery arrived. Scan it before you accept.</h2>
-              <p className="body">
-                Lay the bags out with labels facing up. SecuroServ compares what it sees with the purchase order and
-                invoice. The scan is evidence only and can't move money.
-              </p>
-              <button className="primary" onClick={() => scan(orderId)}>
-                Scan delivery
-              </button>
+              {stationReport ? (
+                <>
+                  <h2>The receiving station scanned your delivery.</h2>
+                  <p className="body">
+                    The station compared what it saw with the purchase order and invoice. Review its report, then accept
+                    or claim each line. The scan is evidence only and can't move money.
+                  </p>
+                  <button className="primary" onClick={() => update(orderId, (s) => scanned(s, detail))}>
+                    Review station report
+                  </button>
+                </>
+              ) : (
+                <>
+                  <h2>Your delivery arrived. Scan it at the receiving station.</h2>
+                  <p className="body">
+                    Put the bags on the station tray with labels facing up. The report appears here when the station has
+                    scanned them. You can add phone photos as proof after that.
+                  </p>
+                  <div className="busy">
+                    <span className="spinner" aria-hidden="true" /> Waiting for a station scan…
+                  </div>
+                  <button className="secondary sm" onClick={() => scan(orderId)}>
+                    Use the demo scan instead <Sim />
+                  </button>
+                </>
+              )}
             </section>
           )}
 
@@ -188,12 +210,11 @@ export function EscrowWorkspace({ detail }: { detail: OrderDetail }) {
           {st.step === "scanning" && isBuyer && (
             <section className="card card-tight">
               <div className="scan-frame">
-                {detail.latestCapture && <img src={detail.latestCapture.imageUrl} alt="Delivery being scanned" />}
                 <div className="scan-inset" />
                 <div className="scan-line" />
               </div>
               <div className="busy">
-                <span className="spinner" aria-hidden="true" /> Reading labels with Gemini… {!detail.latestScan && <Sim />}
+                <span className="spinner" aria-hidden="true" /> Demo scan, no photo is being analysed <Sim />
               </div>
             </section>
           )}
@@ -396,7 +417,8 @@ export function EscrowWorkspace({ detail }: { detail: OrderDetail }) {
             </section>
           )}
 
-          {!["delivered", "scanning"].includes(st.step) && <ReceivingReport detail={detail} />}
+          {(stationReport || !["delivered", "scanning"].includes(st.step)) && <ReceivingReport detail={detail} />}
+          {(stationReport || detail.proofs.length > 0) && <ProofPanel detail={detail} role={role} />}
         </div>
 
         <div className="col-side">
@@ -491,13 +513,15 @@ function ReceivingReport({ detail }: { detail: OrderDetail }) {
   const { latestCapture, latestScan, order } = detail;
   const c = order.comparison;
   const real = !!(latestScan && c);
+  const source = latestCapture?.source === "station" ? "Station scan" : latestCapture ? `${latestCapture.source} capture` : "Demo scan";
   return (
     <section className="card card-report">
       <div className="row between wrap">
         <h3>Receiving report</h3>
         <span className="row gap-6">
           {!real && <Sim />}
-          <span className="pill info pill-sm">AI suggestion · Gemini</span>
+          {real && latestScan!.analyzedBy === "mock" && <span className="sim">MOCK AI</span>}
+          <span className="pill info pill-sm">{source} · AI suggestion{real && latestScan!.analyzedBy !== "mock" ? " · Gemini" : ""}</span>
         </span>
       </div>
       <div className="report-photo">
@@ -505,7 +529,7 @@ function ReceivingReport({ detail }: { detail: OrderDetail }) {
       </div>
       <p className="caption">
         {latestCapture
-          ? `${latestCapture.source} capture · ${new Date(latestCapture.capturedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false })} · sha256 ${latestCapture.imageSha256.slice(0, 10)}…`
+          ? `${latestCapture.source} capture · scan ${latestScan?.id ?? "—"} · rev ${order.evidenceRevision} · ${new Date(latestCapture.capturedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false })} · sha256 ${latestCapture.imageSha256.slice(0, 10)}…`
           : "Phone capture · 10:51 · signed in as Café Luma · sha256 3f9a1c07e2…"}
       </p>
       <p className="seen">
@@ -566,20 +590,29 @@ function itemsLine(detail: OrderDetail) {
   return "3 × Product A 500 g at $10.00";
 }
 
-function waitCard(st: DemoState, role: "buyer" | "supplier", cpName: string, offerLabel?: string): [string, string, string] | null {
+function waitCard(
+  st: DemoState,
+  role: "buyer" | "supplier",
+  cpName: string,
+  offerLabel?: string,
+  stationSummary?: string | null,
+): [string, string, string] | null {
   const isBuyer = role === "buyer";
+  if (st.step === "delivered" && !isBuyer && stationSummary)
+    return ["Station report ready", `${cpName}'s receiving station scanned the delivery.`, `${stationSummary} They haven't accepted or claimed any line yet.`];
   if (st.step === "delivered" && !isBuyer)
     return [
       "Waiting on buyer",
       `${cpName} hasn't inspected the delivery yet.`,
       "The inspection window is 3 days from the carrier's delivered event. Every line they accept pays you right away.",
     ];
-  if (st.step === "scanning" && !isBuyer) return ["Receiving", `${cpName} is scanning the delivery…`, "You'll see the same receiving report they do."];
+  if (st.step === "scanning" && !isBuyer)
+    return ["Receiving · demo scan", `${cpName} is running the simulated demo scan.`, "You'll see the same receiving report they do."];
   if (st.step === "report" && !isBuyer)
     return [
       "Receiving report ready",
       `${cpName} is reviewing the report.`,
-      "The scan found 1 bag of Product A missing and a Product B bag that wasn't ordered. The buyer can accept lines or claim them. A claim can't refund them without your signature.",
+      `${stationSummary ?? "The demo scan found 1 bag of Product A missing and a Product B bag that wasn't ordered."} The buyer can accept lines or claim them. A claim can't refund them without your signature.`,
     ];
   if (st.step === "offer" && st.offer?.by === role && offerLabel)
     return [

@@ -1,4 +1,4 @@
-import type { ApiError, Order, OrderDetail, PaymentTransaction, PublicConfig } from "@cleardock/shared";
+import type { ApiError, Capture, Order, OrderDetail, PaymentTransaction, PhoneProof, PublicConfig } from "@cleardock/shared";
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   let res: Response;
@@ -44,11 +44,15 @@ export const api = {
       `/api/capture-sessions/${code}`,
     ),
 
+  // Phone photo = proof for the current station scan. Never replaces the station result. 409 before any station scan.
   submitCapture: (code: string, image: Blob, mockScenario?: string) => {
     const fd = new FormData();
     fd.append("image", image, "capture.jpg");
     if (mockScenario) fd.append("mockScenario", mockScenario);
-    return request(`/api/capture-sessions/${code}/captures`, { method: "POST", body: fd });
+    return request<{ capture: Capture; proof: PhoneProof; order: OrderDetail }>(`/api/capture-sessions/${code}/captures`, {
+      method: "POST",
+      body: fd,
+    });
   },
 
   approve: (orderId: string, evidenceRevision: number) =>
