@@ -1,0 +1,8 @@
+{
+  "version": "redbull-provisional-v1",
+  "delimiter": ",",
+  "columns": { "itemId": "item_id", "classId": "class", "confidence": "confidence", "damage": "damage" },
+  "damageValues": { "ok": "intact", "damaged": "damaged", "unknown": "unknown" },
+  "minConfidence": 0.8,
+  "model": { "name": "redbull-provisional", "version": "synthetic-v1" }
+}

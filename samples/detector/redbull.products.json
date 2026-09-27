@@ -1,0 +1,4 @@
+[
+  { "sku": "RB-ORIGINAL-250ML", "names": ["Red Bull Original 250 ml", "Red Bull Energy Drink 250 ml"], "volumeMl": 250, "detectorClasses": ["redbull_original_250ml"], "provisional": true },
+  { "sku": "RB-SUGARFREE-250ML", "names": ["Red Bull Sugarfree 250 ml", "Red Bull sin azucar 250 ml"], "volumeMl": 250, "detectorClasses": ["redbull_sugarfree_250ml"], "provisional": true }
+]
