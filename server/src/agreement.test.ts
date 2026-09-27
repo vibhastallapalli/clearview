@@ -525,3 +525,11 @@ describe("order terms before funding", () => {
     assert.deepEqual((await tcall("GET", "")).body.current, agreed);
   });
 });
+
+test("dev-only routes answer local requests but not tunnelled ones", async () => {
+  const dev = (headers: Record<string, string>) =>
+    fetch(`${server.base}/api/dev/orders/${OID}/sample-proof`, { method: "POST", headers: { "content-type": "application/json", ...headers }, body: JSON.stringify({ sample: "nope" }) }).then((r) => r.status);
+  assert.equal(await dev({}), 400); // reached the route (bad sample name)
+  assert.equal(await dev({ "cf-connecting-ip": "203.0.113.9" }), 404);
+  assert.equal(await dev({ "x-forwarded-for": "203.0.113.9" }), 404);
+});

@@ -42,6 +42,14 @@ app.use(cors());
 app.use(express.json());
 app.use("/files", express.static(UPLOAD_DIR));
 
+// Dev-only routes (reset, simulated station photo, sample proof) answer local requests only. A request that
+// came through a tunnel or proxy (Cloudflare adds cf-connecting-ip; proxies add x-forwarded-for) gets 404.
+app.use("/api/dev", (req, res, next) => {
+  if (req.headers["cf-connecting-ip"] || req.headers["x-forwarded-for"]) {
+    res.status(404).json({ error: "Not found", code: "not_found" } satisfies ApiError);
+  } else next();
+});
+
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 15 * 1024 * 1024 } });
 const PORT = Number(process.env.PORT || 3001);
 const PUBLIC_WEB_URL = process.env.PUBLIC_WEB_URL || "http://localhost:5173";
