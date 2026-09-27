@@ -1,7 +1,7 @@
 import { Buffer } from "buffer";
 import { Connection, PublicKey, SendTransactionError, SystemProgram, Transaction, TransactionExpiredBlockheightExceededError, TransactionInstruction, type AccountMeta } from "@solana/web3.js";
-import type { OrderDetail } from "@cleardock/shared";
-import { api } from "../api";
+import { TERMS_PATHS, type OrderDetail, type OrderTermsState } from "@cleardock/shared";
+import { api, request } from "../api";
 import { short } from "../format";
 import * as phantom from "../wallet/phantom";
 import type { ChainAction, SignRequest, Tx } from "./demo";
@@ -72,7 +72,9 @@ export async function signAndSend(request: SignRequest, detail: OrderDetail, hoo
   const [vault] = PublicKey.findProgramAddressSync([Buffer.from("vault"), escrow.toBuffer()], programId);
   if (recorded && recorded.escrowAddress !== escrow.toBase58()) throw new Error("This order's recorded escrow doesn't match its buyer and reference.");
 
-  const ixs = await instructions(chain, { programId, mint, buyer, supplier, escrow, vault, orderIdHash, reference: detail.order.reference });
+  // Funding commits money: only for order terms both parties approved, read fresh from the server (fail closed).
+  const termsHash = chain.action === "fund" ? await agreedTermsHash(detail.order.id, chain.amount) : null;
+  const ixs = await instructions(chain, { programId, mint, buyer, supplier, escrow, vault, orderIdHash, reference: detail.order.reference, termsHash });
   const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash("confirmed");
   let tx = new Transaction({ feePayer: buyer, blockhash, lastValidBlockHeight }).add(...ixs);
 
@@ -180,6 +182,8 @@ interface Keys {
   vault: PublicKey;
   orderIdHash: Buffer;
   reference: string;
+  /** sha256 of the agreed order terms; set for fund only. */
+  termsHash: Buffer | null;
 }
 
 // Account order = the #[derive(Accounts)] structs in solana/escrow/programs/escrow/src/lib.rs.
@@ -206,7 +210,7 @@ async function instructions(chain: ChainAction, k: Keys): Promise<TransactionIns
           [w(k.buyer, true), r(k.supplier), r(k.mint), w(buyerAta), w(k.escrow), w(k.vault), r(TOKEN_PROGRAM), r(SystemProgram.programId)],
           k.orderIdHash,
           u64(chain.amount),
-          await sha256(`terms:${k.reference}:${chain.amount}`),
+          k.termsHash!,
         ),
       ];
     case "accept_all":
@@ -228,6 +232,16 @@ async function instructions(chain: ChainAction, k: Keys): Promise<TransactionIns
 
 const ata = (mint: PublicKey, owner: PublicKey) =>
   PublicKey.findProgramAddressSync([owner.toBuffer(), TOKEN_PROGRAM.toBuffer(), mint.toBuffer()], ATA_PROGRAM)[0];
+
+/** The escrow's terms_hash: the current order terms, only if both parties approved them and the amount matches. */
+async function agreedTermsHash(orderId: string, amount: number): Promise<Buffer> {
+  const st = await request<OrderTermsState>(TERMS_PATHS.state(orderId));
+  if (st.status !== "agreed" || !st.current)
+    throw new Error(`Not funded: the order terms aren't agreed by both parties (${st.status}${st.outstanding.length ? `, waiting on ${st.outstanding.join(" and ")}` : ""}).`);
+  if (st.current.terms.totalMinor !== amount)
+    throw new Error(`Not funded: the agreed terms v${st.current.version} total ${st.current.terms.totalMinor}, not ${amount}.`);
+  return Buffer.from(st.current.termsHash, "hex");
+}
 
 async function sha256(data: string): Promise<Buffer> {
   return Buffer.from(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(data)));

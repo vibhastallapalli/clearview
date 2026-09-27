@@ -3,6 +3,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type {
   AgreementState,
+  OrderTermsVersion,
   Capture,
   CaptureSession,
   ExtractedDocument,
@@ -41,6 +42,17 @@ interface Db {
   archivedOrders: Order[];
   /** Claim negotiation per order. */
   agreements: AgreementRecord[];
+  /** Order terms agreed before funding, per order. */
+  orderTerms: OrderTermsRecord[];
+}
+
+export interface OrderTermsRecord {
+  orderId: string;
+  revision: number;
+  /** Oldest first; the last is current. */
+  versions: OrderTermsVersion[];
+  funded: { termsHash: string; escrowAddress: string; at: string } | null;
+  log: { revision: number; key: string }[];
 }
 
 /** An agreement plus the signed writes applied at each revision (so a retried write is recognised, not re-applied). */
@@ -84,6 +96,7 @@ function seed(rehearsal = 1): Db {
     paymentAttempts: [],
     archivedOrders: [],
     agreements: [],
+    orderTerms: [],
   };
 }
 
@@ -93,6 +106,7 @@ db.paymentAttempts ??= [];
 db.archivedOrders ??= [];
 db.proofs ??= [];
 db.agreements ??= [];
+db.orderTerms ??= [];
 for (const o of db.orders) o.escrow ??= null;
 
 export function save() {
@@ -127,6 +141,7 @@ export function resetDb(): Order {
     scans: keep(db.scans),
     proofs: keep(db.proofs),
     agreements: keep(db.agreements),
+    orderTerms: keep(db.orderTerms),
     paymentAttempts: db.paymentAttempts,
     archivedOrders,
   });

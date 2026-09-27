@@ -16,7 +16,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { PublicKey } from "@solana/web3.js";
-import { agreementMessage, type AgreementState, type AgreementWrite, type ClaimLine } from "@cleardock/shared";
+import { agreementMessage, orderTermsMessage, type AgreementState, type AgreementWrite, type ClaimLine, type OrderTermsState, type TermsPreview } from "@cleardock/shared";
 
 type ClaimWrite = Extract<AgreementWrite, { action: "prepare_claim" }>;
 
@@ -40,6 +40,10 @@ const MINT = randomKey();
 const VAULT = randomKey();
 const OID = "ord_1001";
 const REF = "PO-1001";
+// A fresh order for the order-terms tests: no escrow yet.
+const OID2 = "ord_2002";
+const REF2 = "PO-2002";
+const ESCROW2 = randomKey().toBase58();
 const txSig = () => randomKey().toBase58() + randomKey().toBase58();
 
 const STATUS = { funded: 0, claimed: 1, settled: 2, released: 3 };
@@ -49,14 +53,18 @@ const chain = {
   rpcDown: new Set<string>(),
   seen: new Set<string>(),
   height: 0,
+  /** The fresh order's escrow on chain, once the buyer funds it. */
+  escrow2: null as null | { total: number; termsHash: string },
 };
 
-function escrowData() {
-  const e = chain.escrow;
+function escrowData(address: string) {
+  const fresh = address === ESCROW2 && chain.escrow2;
+  const e = fresh ? { total: fresh.total, released: 0, claimed: 0, refunded: 0, status: STATUS.funded } : chain.escrow;
   const b = Buffer.alloc(234);
   createHash("sha256").update("account:Escrow").digest().copy(b, 0, 0, 8);
   [buyer.pk, supplier.pk, MINT, VAULT].forEach((k, i) => k.toBuffer().copy(b, 8 + 32 * i));
-  createHash("sha256").update(REF).digest().copy(b, 136);
+  createHash("sha256").update(fresh ? REF2 : REF).digest().copy(b, 136);
+  if (fresh) Buffer.from(fresh.termsHash, "hex").copy(b, 168);
   [e.total, e.released, e.claimed, e.refunded].forEach((v, i) => b.writeBigUInt64LE(BigInt(v), 200 + 8 * i));
   b[232] = e.status;
   return b;
@@ -84,7 +92,7 @@ function startRpc(): Promise<string> {
       }
       if (method === "getBlockHeight") return reply(chain.height);
       if (method === "getSignatureStatuses") return reply({ value: [chain.seen.has(params[0][0]) ? { confirmations: 0 } : null] });
-      if (method === "getAccountInfo") return reply({ value: { data: [escrowData().toString("base64"), "base64"], owner: PROGRAM } });
+      if (method === "getAccountInfo") return reply({ value: { data: [escrowData(params[0]).toString("base64"), "base64"], owner: PROGRAM } });
       res.writeHead(400).end();
     });
   });
@@ -119,8 +127,9 @@ function seedDb(dataDir: string) {
   const capture = (id: string) => ({ id, orderId: OID, sessionId: null, source: "station", imageUrl: `/files/${id}.jpg`, imageSha256: id, capturedAt: t, sensors: [], fixture: "test photo" });
   const scan = (id: string) => ({ id, orderId: OID, captureId: id === "scan_old" ? "cap_1" : "cap_2", observed: [], unreadable: [], notes: "fixture", analyzedBy: "mock", analyzedAt: t });
   const proof = { id: "prf_1", orderId: OID, captureId: "cap_p", imageSha256: "0", kind: "live", stationScanId: "scan_old", stationCaptureId: "cap_1", evidenceRevision: 2, createdAt: t };
+  const fresh = { ...order, id: OID2, reference: REF2, status: "needs_documents", evidenceRevision: 0, latestCaptureId: null, latestScanId: null, escrow: null };
   writeFileSync(join(dataDir, "db.json"), JSON.stringify({
-    suppliers: [sup], orders: [order], documents: [], sessions: [], captures: [capture("cap_1"), capture("cap_2")], scans: [scan("scan_old"), scan("scan_new")],
+    suppliers: [sup], orders: [order, fresh], documents: [], sessions: [], captures: [capture("cap_1"), capture("cap_2")], scans: [scan("scan_old"), scan("scan_new")],
     proofs: [proof], paymentAttempts: [], archivedOrders: [], agreements: [],
   }));
 }
@@ -128,11 +137,12 @@ function seedDb(dataDir: string) {
 let rpcUrl = "";
 const dataDir = mkdtempSync(join(tmpdir(), "cleardock-agreement-"));
 
-async function startServer() {
+async function startServer(overrides: NodeJS.ProcessEnv = {}) {
   const port = await freePort();
   const env: NodeJS.ProcessEnv = {
     ...process.env, PORT: String(port), CLEARDOCK_DATA_DIR: dataDir, GEMINI_API_KEY: "", SOLANA_RPC_URL: rpcUrl,
     ESCROW_PROGRAM_ID: PROGRAM, DEMO_TOKEN_MINT: MINT.toBase58(), DEMO_BUYER_WALLET: buyer.address, DEMO_SUPPLIER_WALLET: supplier.address,
+    ...overrides,
   };
   delete env.NODE_TEST_CONTEXT;
   const child = spawn(process.execPath, ["--no-warnings", "--import", "tsx", join(HERE, "index.ts")], { cwd: join(HERE, ".."), env, stdio: ["ignore", "pipe", "pipe"] });
@@ -386,5 +396,132 @@ describe("agreement", () => {
     assert.equal(order.order.escrow.status, "settled");
     assert.ok(order.order.escrow.events.some((e: { action: string; signature: string }) => e.action === "settle" && e.signature === d));
     assert.equal((await call("POST", "/settlement", signed(settle("buyer", st, txSig(), 900), buyer.key))).status, 409);
+  });
+});
+
+// ---------- order terms (before funding) ----------
+
+async function tcall(method: string, path: string, body?: object) {
+  const r = await fetch(server.base + `/api/orders/${OID2}/terms` + path, {
+    method,
+    headers: body ? { "content-type": "application/json" } : {},
+    body: body && JSON.stringify(body),
+  });
+  return { status: r.status, body: (await r.json()) as OrderTermsState & { error?: string } };
+}
+const termsLines = (quantity: number) => [{ sku: "A", description: "Product A 500 g", quantity, unitPriceMinor: 1000 }];
+const termsSig = (v: { version: number; termsHash: string; terms: TermsPreview["terms"] }, key: KeyObject) =>
+  sign(null, Buffer.from(orderTermsMessage(OID2, v.version, v.termsHash, v.terms)), key).toString("base64");
+
+async function proposeTerms(as: "buyer" | "supplier", key: KeyObject, quantity: number, expectedRevision: number) {
+  const pv = (await tcall("POST", "/preview", { lines: termsLines(quantity), inspectionHours: 72 })).body as unknown as TermsPreview;
+  return tcall("POST", "/propose", { as, expectedRevision, lines: termsLines(quantity), inspectionHours: 72, walletSignature: termsSig(pv, key) });
+}
+const approveBody = (as: "buyer" | "supplier", key: KeyObject, v: NonNullable<OrderTermsState["current"]>) => ({ as, version: v.version, termsHash: v.termsHash, walletSignature: termsSig(v, key) });
+
+async function fundEvent(total: number, termsHash: string) {
+  chain.escrow2 = { total, termsHash };
+  const signature = txSig();
+  chain.txs.set(signature, tx("Fund", { escrow: ESCROW2 }));
+  const r = await fetch(`${server.base}/api/orders/${OID2}/escrow/events`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ action: "fund", signature, escrowAddress: ESCROW2 }),
+  });
+  return { status: r.status, body: await r.json() };
+}
+const escrowOf = async (oid: string) => (await (await fetch(`${server.base}/api/orders/${oid}`)).json()).order.escrow;
+
+describe("order terms before funding", () => {
+  let v1Hash = "";
+
+  test("an escrow funded before terms existed is legacy; a fresh order has none", async () => {
+    const legacy = await (await fetch(`${server.base}/api/orders/${OID}/terms`)).json();
+    assert.equal(legacy.status, "legacy");
+    const st = (await tcall("GET", "")).body;
+    assert.equal(st.status, "none");
+    assert.deepEqual(st.outstanding, ["buyer", "supplier"]);
+  });
+
+  test("the preview builds the canonical terms from server facts, not the client", async () => {
+    const pv = (await tcall("POST", "/preview", { lines: termsLines(3), inspectionHours: 72 })).body as unknown as TermsPreview;
+    assert.equal(pv.version, 1);
+    assert.deepEqual([pv.terms.totalMinor, pv.terms.buyerWallet, pv.terms.supplierWallet, pv.terms.mint, pv.terms.reference], [3000, buyer.address, supplier.address, MINT.toBase58(), REF2]);
+    assert.deepEqual(pv.terms.inspection, { hours: 72, startsAt: "first_station_scan_after_funding", enforced: false });
+    assert.equal((await tcall("POST", "/preview", { lines: [{ description: "x", quantity: 1.5, unitPriceMinor: 100 }], inspectionHours: 72 })).status, 400);
+  });
+
+  test("wrong wallets are rejected and one approval can't unlock funding", async () => {
+    assert.equal((await proposeTerms("buyer", supplier.key, 3, 0)).status, 401);
+    assert.equal((await proposeTerms("buyer", intruder.key, 3, 0)).status, 401);
+    const r = await proposeTerms("buyer", buyer.key, 3, 0);
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    assert.equal(r.body.status, "awaiting_approval");
+    assert.deepEqual(r.body.outstanding, ["supplier"]);
+    v1Hash = r.body.current!.termsHash;
+    assert.equal((await tcall("POST", "/approve", approveBody("supplier", buyer.key, r.body.current!))).status, 401);
+
+    // The buyer funds on chain with exactly these terms, but only one party approved: not linked.
+    const f = await fundEvent(3000, v1Hash);
+    assert.equal(f.status, 409, JSON.stringify(f.body));
+    assert.equal(await escrowOf(OID2), null);
+  });
+
+  test("editing the terms invalidates earlier approvals; signatures from different versions can't be combined", async () => {
+    let st = (await tcall("GET", "")).body;
+    assert.equal((await proposeTerms("supplier", supplier.key, 2, st.revision - 1)).status, 409); // stale revision
+    const r = await proposeTerms("supplier", supplier.key, 2, st.revision);
+    st = r.body;
+    assert.deepEqual([st.current!.version, st.status, st.outstanding], [2, "awaiting_approval", ["buyer"]]);
+    assert.equal(st.history[0].version, 1);
+    const v1 = st.history[0];
+    assert.equal((await tcall("POST", "/approve", approveBody("buyer", buyer.key, v1))).status, 409); // not current
+    const mixed = { as: "buyer", version: 2, termsHash: st.current!.termsHash, walletSignature: termsSig(v1, buyer.key) };
+    assert.equal((await tcall("POST", "/approve", mixed)).status, 401); // a v1 signature doesn't approve v2
+
+    const ok = await tcall("POST", "/approve", approveBody("buyer", buyer.key, st.current!));
+    assert.equal(ok.body.status, "agreed");
+    assert.deepEqual(ok.body.current!.approvals.map((a) => [a.party, a.wallet]), [["supplier", supplier.address], ["buyer", buyer.address]]);
+    const again = await tcall("POST", "/approve", approveBody("buyer", buyer.key, st.current!));
+    assert.equal(again.body.revision, ok.body.revision); // no duplicate approval
+  });
+
+  test("changed mint or parties can't reuse the acceptance; reload restores the same state on any device", async () => {
+    const prior = (await tcall("GET", "")).body;
+    await server.stop();
+    server = await startServer({ DEMO_TOKEN_MINT: randomKey().toBase58() });
+    let st = (await tcall("GET", "")).body;
+    assert.equal(st.status, "stale");
+    assert.match(st.staleReason ?? "", /mint/);
+    assert.equal((await tcall("POST", "/approve", approveBody("buyer", buyer.key, st.current!))).status, 409);
+
+    await server.stop();
+    server = await startServer({ DEMO_BUYER_WALLET: intruder.address });
+    st = (await tcall("GET", "")).body;
+    assert.equal(st.status, "stale");
+    assert.match(st.staleReason ?? "", /buyerWallet/);
+
+    await server.stop();
+    server = await startServer();
+    assert.deepEqual((await tcall("GET", "")).body, prior); // first device
+    assert.deepEqual((await tcall("GET", "")).body, prior); // second device
+  });
+
+  test("funding links only an escrow holding exactly the agreed terms, then the terms freeze", async () => {
+    const st = (await tcall("GET", "")).body;
+    const agreed = st.current!;
+    assert.equal((await fundEvent(2000, v1Hash)).status, 409); // an earlier version's hash
+    assert.equal((await fundEvent(3000, agreed.termsHash)).status, 409); // wrong amount for v2
+    const f = await fundEvent(2000, agreed.termsHash);
+    assert.equal(f.status, 200, JSON.stringify(f.body));
+    const funded = (await tcall("GET", "")).body;
+    assert.equal(funded.status, "funded");
+    assert.equal(funded.funded?.termsHash, agreed.termsHash);
+    assert.equal(funded.funded?.escrowAddress, ESCROW2);
+
+    // Frozen: no new version, no approvals.
+    assert.equal((await proposeTerms("buyer", buyer.key, 5, funded.revision)).status, 409);
+    assert.equal((await tcall("POST", "/approve", approveBody("buyer", buyer.key, agreed))).status, 409);
+    assert.deepEqual((await tcall("GET", "")).body.current, agreed);
   });
 });

@@ -101,6 +101,23 @@ Base `/api`. Errors are `{ error, code }` with `code` one of `not_found`, `bad_r
 
 Program `ESCROW_PROGRAM_ID` (also in `GET /config` as `escrowProgramId`). The escrow PDA is `["escrow", buyer, sha256(order.reference)]`, the vault is `["vault", escrow]`. The browser builds and signs escrow transactions (see `solana/escrow`), then reports each one to `/escrow/events`. An order with an escrow can't also be paid directly (`/payments` → 409), and a demo reset archives it (the reference is single-use because the PDA is keyed by it).
 
+## Order terms (agreed before funding)
+
+Separate from the settlement agreement below. Types: `OrderTerms`, `OrderTermsState`, `ORDER_TERMS_RULES`, `canonicalTerms`, `termsHashOf`, `orderTermsMessage`, `TERMS_PATHS` in `shared/src/contracts.ts`.
+
+| Method + path (under `/api/orders/:id/terms`) | Body | Wallet signature |
+|---|---|---|
+| `GET` | – | – |
+| `POST /preview` | `{ lines, inspectionHours }` → `{ version, terms, termsHash }`, changes nothing | – |
+| `POST /propose` | `{ as, expectedRevision, lines, inspectionHours, walletSignature }` | proposer; counts as their approval |
+| `POST /approve` | `{ as, version, termsHash, walletSignature }` | approver |
+
+1. **What is signed.** The server builds the terms from its own facts (reference, program, mint, `DEMO_BUYER_WALLET`, verified supplier wallet) plus the proposed `lines` and `inspectionHours`, and the fixed `ORDER_TERMS_RULES`. `termsHash` = sha256 of `canonicalTerms`. Each party signs `orderTermsMessage(orderId, version, termsHash, terms)`, so a signature for one version never approves another.
+2. **Versions.** Any proposal is a new version carrying only its proposer's approval. `agreed` = both approved the current version and no order fact changed since (else `stale`, with `staleReason`). Proposals carry `expectedRevision` (409 if stale; the same signed proposal again is not applied twice).
+3. **Funding gate (server).** The first escrow event that links an escrow to the order (`/escrow/events`) is refused unless the terms are `agreed` and the chain escrow's `terms_hash`, total, mint, buyer and supplier equal the agreed terms. Linking freezes them (`funded`): no new versions or approvals. Later escrow events must still match the funded terms. The web fund path reads the terms fresh and passes `termsHash` as the program's `terms_hash`.
+4. **What the program does and doesn't enforce.** `fund` stores `terms_hash` but doesn't check any signature (only the buyer signs `fund`). A buyer can fund directly on-chain with any hash; ClearDock then won't link that escrow to the order. Its funds can still only leave through the program's normal instructions (supplier payouts, or a settle both sign). Inspection window: starts at the first station scan after funding; **not enforced**, no automatic release or refund, no arbitration.
+5. **Legacy.** An escrow linked before order terms existed shows `legacy`: nobody signed terms for it. Its events keep working; nothing is backfilled.
+
 ## Agreement (negotiating a claimed amount)
 
 Types: `AgreementState`, `AgreementWrite`, `agreementMessage()`, `AGREEMENT_PATHS` in `shared/src/contracts.ts`. Every endpoint returns the whole `AgreementState`. Amounts are integer CDT minor units. Rules: [docs/escrow-rulebook.md](docs/escrow-rulebook.md). Key invariant: `toSupplierMinor + toBuyerMinor` equals the held amount, both settle signatures required.

@@ -350,6 +350,176 @@ export interface ClaimLine {
   reason: "missing" | "wrong_item" | "damaged" | "other";
 }
 
+// ---------- Order terms: what both parties agree to BEFORE funding ----------
+//
+// Separate from the settlement agreement below (which splits a disputed, already-held amount).
+// Either party proposes a version; its proposer's wallet signature approves it. The other party approves
+// the SAME version and termsHash. Both approvals on the current, non-stale version = agreed; only then does
+// the server link a funded escrow to the order, and only if the escrow's on-chain terms_hash equals termsHash.
+// Once funded the terms are frozen.
+//
+// Honest scope: the escrow program stores terms_hash but does not verify these signatures (only the buyer
+// signs `fund`). A buyer could fund on-chain directly; ClearDock then refuses to link that escrow, and its
+// funds can only leave through the program's normal instructions. The inspection window is informational.
+
+/** Bump when ORDER_TERMS_RULES changes. */
+export const ORDER_TERMS_RULES_VERSION = 1;
+
+/** The rules every order agrees to. Only what the app and program actually do. */
+export const ORDER_TERMS_RULES: readonly string[] = [
+  "Funding: the buyer locks the total below, in the ClearDock devnet test token (not real money), in the ClearDock escrow for this order.",
+  "Acceptance: amounts the buyer confirms as received are released to the supplier wallet by the buyer's transaction.",
+  "Claims: amounts the buyer claims stay held in escrow. They leave only through one settle transaction signed by both buyer and supplier for an exact split of the held amount.",
+  "No timeout: nothing is released or refunded automatically, including when the inspection window ends. The window is not enforced in this version.",
+  "No arbitration: if buyer and supplier don't agree, the held amount stays in escrow. ClearDock never decides who is right.",
+  "Evidence: station scans and photos are evidence for both sides to review, not verdicts. AI output never moves money.",
+];
+
+export interface OrderTermsLine {
+  sku: string | null;
+  description: string;
+  quantity: number;
+  unitPriceMinor: number;
+}
+
+/** The canonical terms. Every field is material: changing any of them is a new version. */
+export interface OrderTerms {
+  rulesVersion: number;
+  orderId: string;
+  reference: string;
+  network: "devnet";
+  escrowProgramId: string;
+  /** Devnet test token mint (CDT, 2 decimals). */
+  mint: string;
+  buyerWallet: string;
+  supplierWallet: string;
+  lines: OrderTermsLine[];
+  /** Sum of quantity × unitPriceMinor. The escrow must be funded with exactly this. */
+  totalMinor: number;
+  inspection: {
+    hours: number;
+    /** The window starts at the first station scan ClearDock records for this order after the escrow is funded. */
+    startsAt: "first_station_scan_after_funding";
+    /** Nothing enforces the deadline, on-chain or in the app. */
+    enforced: false;
+  };
+  rules: string[];
+}
+
+export interface TermsApproval {
+  party: Party;
+  wallet: string;
+  /** base64 ed25519 signature over orderTermsMessage(orderId, version, termsHash, terms). */
+  signature: string;
+  at: string;
+}
+
+export interface OrderTermsVersion {
+  version: number;
+  terms: OrderTerms;
+  /** sha256 hex of canonicalTerms(terms). Also the escrow's on-chain terms_hash. */
+  termsHash: string;
+  proposedBy: Party;
+  proposedAt: string;
+  approvals: TermsApproval[];
+}
+
+/**
+ * none: no terms yet. awaiting_approval: current version lacks a party's approval.
+ * agreed: both approved the current version; funding is allowed. stale: an order fact (reference, wallets,
+ * mint, program) changed since, so the approvals no longer count; propose a new version.
+ * funded: an escrow with this termsHash, total, mint and parties is linked; terms are frozen.
+ * legacy: the escrow was linked before order terms existed. Nobody signed terms for it.
+ */
+export type OrderTermsStatus = "none" | "awaiting_approval" | "agreed" | "stale" | "funded" | "legacy";
+
+export interface OrderTermsState {
+  orderId: string;
+  /** Bumps on every change. Proposals carry expectedRevision; a stale one gets 409. */
+  revision: number;
+  status: OrderTermsStatus;
+  /** The version being approved, agreed or funded. */
+  current: OrderTermsVersion | null;
+  /** Earlier versions, newest first. Their approvals don't count. */
+  history: OrderTermsVersion[];
+  /** Parties whose approval of the current version is still missing. */
+  outstanding: Party[];
+  staleReason: string | null;
+  funded: { termsHash: string; escrowAddress: string; at: string } | null;
+}
+
+/** Body of POST /terms/propose. The proposer's walletSignature (over the new version) is their approval. */
+export interface ProposeTermsInput {
+  as: Party;
+  expectedRevision: number;
+  lines: OrderTermsLine[];
+  inspectionHours: number;
+  walletSignature: string;
+}
+
+/** Body of POST /terms/approve. */
+export interface ApproveTermsInput {
+  as: Party;
+  version: number;
+  termsHash: string;
+  walletSignature: string;
+}
+
+/** Response of POST /terms/preview: what a proposal would create, to sign. Changes nothing. */
+export interface TermsPreview {
+  version: number;
+  terms: OrderTerms;
+  termsHash: string;
+}
+
+/** The exact bytes termsHash is computed from. Fixed key order. */
+export function canonicalTerms(t: OrderTerms): string {
+  return JSON.stringify([
+    t.rulesVersion,
+    t.orderId,
+    t.reference,
+    t.network,
+    t.escrowProgramId,
+    t.mint,
+    t.buyerWallet,
+    t.supplierWallet,
+    t.lines.map((l) => [l.sku, l.description, l.quantity, l.unitPriceMinor]),
+    t.totalMinor,
+    [t.inspection.hours, t.inspection.startsAt, t.inspection.enforced],
+    t.rules,
+  ]);
+}
+
+/** sha256 hex of canonicalTerms(t). Works in the browser and in Node 20+. */
+export async function termsHashOf(t: OrderTerms): Promise<string> {
+  const digest = await globalThis.crypto.subtle.digest("SHA-256", new TextEncoder().encode(canonicalTerms(t)));
+  return Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+const cdt = (minor: number) => `${Math.floor(minor / 100)}.${String(minor % 100).padStart(2, "0")} CDT`;
+
+/** The text a party's wallet signs to approve a version. Readable summary + the hash that binds every field. */
+export function orderTermsMessage(orderId: string, version: number, termsHash: string, t: OrderTerms): string {
+  return [
+    "ClearDock order terms (Solana devnet, test token). Signing approves these terms; it moves no funds.",
+    `order: ${orderId} (${t.reference})`,
+    `version: ${version}`,
+    `terms sha256: ${termsHash}`,
+    `total: ${cdt(t.totalMinor)} · ${t.lines.map((l) => `${l.quantity} × ${l.description} @ ${cdt(l.unitPriceMinor)}`).join("; ")}`,
+    `buyer: ${t.buyerWallet}`,
+    `supplier: ${t.supplierWallet}`,
+    `inspection: ${t.inspection.hours} h from the first station scan after funding (not enforced)`,
+    "claimed amounts stay held until both sign a settlement; no timeout, no arbitration",
+  ].join("\n");
+}
+
+export const TERMS_PATHS = {
+  state: (orderId: string) => `/api/orders/${orderId}/terms`,
+  preview: (orderId: string) => `/api/orders/${orderId}/terms/preview`,
+  propose: (orderId: string) => `/api/orders/${orderId}/terms/propose`,
+  approve: (orderId: string) => `/api/orders/${orderId}/terms/approve`,
+};
+
 // ---------- Agreement: negotiating a claimed (held) escrow amount ----------
 //
 // After the buyer claims on-chain, buyer and supplier negotiate how to split the held amount, then both

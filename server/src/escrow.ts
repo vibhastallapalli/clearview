@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { Router, type NextFunction, type Request, type Response } from "express";
 import type { ApiError, EscrowRecord, Order, OrderDetail } from "@cleardock/shared";
 import { db, orderDetail, save } from "./store.ts";
+import { assertEscrowMatchesFundedTerms, assertFundingMatchesTerms, markFunded } from "./terms.ts";
 
 export type EscrowAction = "fund" | "accept_all" | "claim" | "settle";
 
@@ -64,6 +65,8 @@ export interface DecodedEscrow {
   mint: string;
   vault: string;
   orderIdHash: Buffer;
+  /** sha256 hex of the canonical order terms, as passed to `fund`. */
+  termsHash: string;
   totalMinor: number;
   releasedMinor: number;
   claimedMinor: number;
@@ -89,6 +92,7 @@ export function decodeEscrowAccount(data: Buffer): DecodedEscrow {
     mint: key(72),
     vault: key(104),
     orderIdHash: Buffer.from(data.subarray(136, 168)),
+    termsHash: data.subarray(168, 200).toString("hex"),
     totalMinor: amount(200),
     releasedMinor: amount(208),
     claimedMinor: amount(216),
@@ -219,6 +223,10 @@ export async function applyEscrowEvent(order: Order, action: EscrowAction, signa
   if (!STATUS_AFTER[action as EscrowAction].includes(state.status)) {
     throw new EscrowRouteError(409, "conflict", `On-chain escrow is "${state.status}", which "${action}" can't produce`);
   }
+  // Order terms gate. Synchronous from here to save(), so the terms can't change in between.
+  const linking = !order.escrow;
+  if (linking) assertFundingMatchesTerms(order, state);
+  else assertEscrowMatchesFundedTerms(order, state);
 
   order.escrow = {
     programId,
@@ -233,6 +241,7 @@ export async function applyEscrowEvent(order: Order, action: EscrowAction, signa
     status: state.status,
     events: at ? [...events, { action, signature, at }] : events,
   };
+  if (linking) markFunded(order, escrowAddress);
   order.updatedAt = new Date().toISOString();
   save();
   return state;

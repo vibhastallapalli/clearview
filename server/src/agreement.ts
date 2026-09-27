@@ -53,14 +53,19 @@ const isSignature = (v: unknown): v is string => typeof v === "string" && /^[1-9
 
 const ED25519_SPKI_PREFIX = Buffer.from("302a300506032b6570032100", "hex");
 
+/** True if walletSignature (base64) is the wallet's ed25519 signature over message (Phantom signMessage). */
+export function signedBy(wallet: string, message: string, walletSignature: unknown): boolean {
+  const key = createPublicKey({ key: Buffer.concat([ED25519_SPKI_PREFIX, new PublicKey(wallet).toBuffer()]), format: "der", type: "spki" });
+  const sig = typeof walletSignature === "string" ? Buffer.from(walletSignature, "base64") : Buffer.alloc(0);
+  return sig.length === 64 && verify(null, Buffer.from(message), key, sig);
+}
+
 function assertSignedBy(order: Order, write: AgreementWrite, walletSignature: unknown) {
   // order.escrow is only written from verified chain state, bound to the demo buyer and verified supplier.
   const escrow = order.escrow;
   if (!escrow) throw conflict("This order has no verified escrow yet, so there are no buyer and supplier wallets to check.");
   const wallet = write.as === "buyer" ? escrow.buyer : escrow.supplier;
-  const key = createPublicKey({ key: Buffer.concat([ED25519_SPKI_PREFIX, new PublicKey(wallet).toBuffer()]), format: "der", type: "spki" });
-  const sig = typeof walletSignature === "string" ? Buffer.from(walletSignature, "base64") : Buffer.alloc(0);
-  if (sig.length !== 64 || !verify(null, Buffer.from(agreementMessage(order.id, write)), key, sig)) {
+  if (!signedBy(wallet, agreementMessage(order.id, write), walletSignature)) {
     throw new HttpError(401, "unauthorized", `This action must be signed by the ${write.as} wallet ${wallet}.`);
   }
 }
