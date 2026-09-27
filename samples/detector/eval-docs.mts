@@ -5,8 +5,10 @@
  *
  * Uses the provisional soda catalog and a fresh temp data dir (no cache hits) in this process only.
  * Refuses to run without a key: mock output proves nothing. --write saves samples/detector/eval-results.<model>.json.
+ * Every attempt, pass or fail (with 429 quota metadata), is appended to samples/detector/eval-attempts.jsonl.
+ * One attempt per document: no automatic retries (GEMINI_NO_RETRY). Retry by rerunning, deliberately.
  */
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -14,6 +16,7 @@ import { fileURLToPath } from "node:url";
 const here = fileURLToPath(new URL(".", import.meta.url));
 process.env.CLEARDOCK_PRODUCTS_FILE = join(here, "products.proposed.json");
 process.env.CLEARDOCK_DATA_DIR = mkdtempSync(join(tmpdir(), "cleardock-eval-"));
+process.env.GEMINI_NO_RETRY = "1";
 if (!process.env.GEMINI_API_KEY) throw new Error("GEMINI_API_KEY not loaded; refusing to report mock output as an eval.");
 
 const { analyzeDocument } = await import("../../server/src/ai/analyze.ts");
@@ -26,6 +29,7 @@ const example = JSON.parse(readFileSync(join(here, "detections.example.json"), "
 const mime = (f: string) => (f.endsWith(".pdf") ? "application/pdf" : "image/png") as "application/pdf" | "image/png";
 
 const results: any[] = [];
+const log = (entry: object) => appendFileSync(join(here, "eval-attempts.jsonl"), JSON.stringify({ at: new Date().toISOString(), model: geminiModel(), ...entry }) + "\n");
 const docs: Record<string, any> = {};
 let failed = 0;
 const only = process.argv.slice(2).filter((a) => !a.startsWith("--"));
@@ -37,7 +41,10 @@ for (const exp of expected.documents.filter((e: any) => only.length === 0 || onl
     doc = await analyzeDocument({ orderId: "ord_1001", docId: exp.file, kind: exp.kind, filename: exp.file, mimeType: mime(exp.file), sha256: "", data });
   } catch (err) {
     failed++;
+    const quota = (err as any).quota ?? null;
     results.push({ file: exp.file, error: (err as Error).message, latencyMs: Date.now() - t0 });
+    log({ file: exp.file, ok: false, latencyMs: Date.now() - t0, error: (err as Error).message, quota });
+    if (quota) console.log(`   quota: ${JSON.stringify(quota)}`);
     console.log(`FAIL ${exp.file}: ${(err as Error).message}`);
     continue;
   }
@@ -54,6 +61,7 @@ for (const exp of expected.documents.filter((e: any) => only.length === 0 || onl
   });
   const bad = checks.filter(([, a, e]) => a !== e);
   failed += bad.length;
+  log({ file: exp.file, ok: true, extractedBy: doc.extractedBy, latencyMs: Date.now() - t0, passed: checks.length - bad.length, checks: checks.length, mismatches: bad, doc });
   console.log(`${bad.length ? "FAIL" : "PASS"} ${exp.file} (${doc.extractedBy}, ${Date.now() - t0} ms): ${checks.length - bad.length}/${checks.length}`);
   for (const [name, a, e] of bad) console.log(`   ${name}: got ${JSON.stringify(a)}, expected ${JSON.stringify(e)}`);
   results.push({

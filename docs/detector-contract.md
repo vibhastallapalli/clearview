@@ -126,8 +126,24 @@ Cherry-picked onto this branch (it only touches `server/src/ai/**`). Gemini stat
 | `gemini-2.5-flash` (the model in `.env.example`) | Live Gemini | 404 for all three: model unavailable to this key (see request 6) |
 | Real detector output, real captures, accuracy, latency | – | **Blocked on hardware** |
 
-Raw evidence: `samples/detector/eval-results.gemini-3.8-flash.json` (run 1). Rerun with
-`node --env-file=<private key file> --import tsx samples/detector/eval-docs.mts --write` once quota resets.
+Evidence:
+- `samples/detector/eval-attempts.jsonl`: **every** attempt, passed or failed, append-only (16 so far: 2 passed,
+  14 failed). Attempts from before logging existed are marked `reconstructed` (exact time and quota metadata not recorded).
+- `samples/detector/eval-results.gemini-3.8-flash.json`: full output of run 1.
+
+**Quota (recorded 2026-09-27T06:40:26Z, from Google's 429 body, no secrets):**
+`quotaId: GenerateRequestsPerDayPerProjectPerModel-FreeTier`,
+`quotaMetric: generativelanguage.googleapis.com/generate_content_free_tier_requests`, `quotaValue: 20`,
+`model: gemini-3.8-flash`, `location: global`. That is a **daily** limit of 20 requests per project per model.
+The same 429 also said "retry in 33s", which is misleading for a daily limit. The running demo server uses the
+same key and project, so every live Gemini call anyone makes (documents and station scans) comes out of these
+20 a day. Before the demo: budget calls, or use a paid-tier key.
+
+**Retries:** the eval makes one attempt per document (`GEMINI_NO_RETRY=1`). Retry by rerunning it deliberately,
+never in a loop. The app itself still retries twice inside each call, as before. Missing live case: once quota
+resets, run
+`node --env-file=<private key file> --import tsx samples/detector/eval-docs.mts --write docs/cans_po_en.pdf docs/cans_invoice_es.png`
+(2 calls: the outcome check needs the PO extracted in the same run).
 These are 3 synthetic documents on a provisional catalog: evidence the extraction path works, not an accuracy figure.
 
 ### Real-capture evaluation to run once hardware is ready
@@ -145,7 +161,15 @@ A few successful demo runs are not an accuracy figure.
   If it's unsure, sees an unknown can, or sees nothing at all, the result says "needs review". It never says "zero".
 - **Plain code** compares ordered vs billed vs seen, and computes any missing value in cents. No AI decides a payment.
 - **People** approve and sign. Phone photos are shown to the supplier as-is. No AI judges them.
-- **Actually tested so far:** the adapter and comparison, using made-up detector outputs. Live Gemini read the
-  synthetic can PO correctly and refused to guess a case with no pack size. The matching invoice hasn't
-  finished a live run yet (Gemini quota). **Not tested:** the real detector on real photos. Don't claim detector
-  accuracy, and don't call 2 documents an accuracy result.
+### Partial results you can state (and their limits)
+
+| Claim | Status |
+|---|---|
+| Gemini read the synthetic English can PO correctly (products, 6-pack → 6 cans, prices, total) | **Live, 1 run**, 11/11 checks |
+| Given a Spanish invoice line "1 caja" with no pack size, Gemini + code refused to guess and flagged it for review | **Live, 1 run**, 8/8 checks |
+| PO + matching Spanish invoice → "match" | **Not verified live** (Gemini quota). Only unit tests with simulated Gemini replies |
+| Detector adapter handles missing, wrong brand/size, extra, covered, empty, repeated frames | **Unit tests on made-up detector output only** |
+| The detector works on real cans / real hardware | **Not tested.** No real detector output or class list yet |
+
+Say "tested on 2 synthetic documents", not "X% accurate". There is no overall accuracy figure and no
+real-hardware detector test. The can products are placeholders until hardware confirms them.
