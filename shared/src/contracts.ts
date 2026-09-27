@@ -756,6 +756,76 @@ export const AGREEMENT_PATHS = {
   settlement: (orderId: string) => `/api/orders/${orderId}/agreement/settlement`,
 };
 
+// ---------- Dispute chat (buyer ↔ supplier) ----------
+//
+// Free text between the two parties. Messages never move money and never make offers: "/offer",
+// "/accept" and "/reject" are parsed by plain code in the browser and go through the wallet-signed
+// agreement API like the buttons do. A party signs in once per session (Phantom signMessage over
+// chatSessionMessage); the server then labels each message with that party's wallet.
+// The AI helper only rewords a draft the sender then edits and sends; it can't add or change numbers.
+
+export interface ChatMessage {
+  id: string;
+  orderId: string;
+  from: Party;
+  /** The wallet that signed in the session this message was sent from. */
+  wallet: string;
+  text: string;
+  at: string;
+  /** The sender used the AI wording helper for this message. */
+  aiAssisted: boolean;
+}
+
+export interface ChatState {
+  orderId: string;
+  /** Oldest first. */
+  messages: ChatMessage[];
+}
+
+/** Response of POST /chat/session. Send the token as `Authorization: Bearer <token>`. */
+export interface ChatSession {
+  token: string;
+  as: Party;
+  wallet: string;
+  expiresAt: string;
+}
+
+/** Response of POST /chat/assist. */
+export interface ChatAssist {
+  text: string;
+  model: string;
+  /** False when the AI's rewrite changed numbers, so the original draft is returned. */
+  used: boolean;
+  note: string | null;
+}
+
+/** What a wallet signs to open a chat session. issuedAt must be recent; the nonce is single-use. */
+export function chatSessionMessage(orderId: string, as: Party, issuedAt: string, nonce: string): string {
+  return [
+    "ClearDock dispute chat (Solana devnet). Signing opens a chat session; it moves no funds and makes no offer.",
+    `order: ${orderId}`,
+    `as: ${as}`,
+    `issued: ${issuedAt}`,
+    `nonce: ${nonce}`,
+  ].join("\n");
+}
+
+/** Every number in a text (digits with optional separators/decimals), normalised. */
+const numbersIn = (text: string) => (text.match(/\d[\d,]*(?:\.\d+)?/g) ?? []).map((n) => n.replace(/,/g, "").replace(/\.0+$/, ""));
+
+/** True if `rewrite` contains no number that `draft` doesn't: the AI may reword, never invent amounts. */
+export function numbersPreserved(draft: string, rewrite: string): boolean {
+  const allowed = new Set(numbersIn(draft));
+  return numbersIn(rewrite).every((n) => allowed.has(n));
+}
+
+export const CHAT_PATHS = {
+  state: (orderId: string) => `/api/orders/${orderId}/chat`,
+  session: (orderId: string) => `/api/orders/${orderId}/chat/session`,
+  messages: (orderId: string) => `/api/orders/${orderId}/chat/messages`,
+  assist: (orderId: string) => `/api/orders/${orderId}/chat/assist`,
+};
+
 // ---------- API envelopes ----------
 
 export interface ApiError {

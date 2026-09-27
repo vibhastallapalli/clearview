@@ -33,6 +33,7 @@ import {
 import { escrowRouter } from "./escrow.ts";
 import { agreementRouter } from "./agreement.ts";
 import { termsRouter } from "./terms.ts";
+import { chatRouter } from "./chat.ts";
 import { configuredMint, isValidAmount, isWallet, publicConfig, rpcUrl } from "./solana/tx.ts";
 import { analyzeDocument, analyzeScan, type MockScenario } from "./ai/analyze.ts";
 import { geminiEnabled } from "./ai/gemini.ts";
@@ -463,6 +464,7 @@ app.post(
 app.use(escrowRouter);
 app.use(agreementRouter);
 app.use(termsRouter);
+app.use(chatRouter);
 
 // ---------- dev ----------
 

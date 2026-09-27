@@ -29,6 +29,7 @@ import { useDemo } from "./DemoProvider";
 import { ProofPanel } from "../proof/ProofPanel";
 import { StationSimulator } from "./StationSimulator";
 import { AgreementPanel } from "../agreement/AgreementPanel";
+import { ChatPanel } from "../chat/ChatPanel";
 import { useAgreement } from "../agreement/useAgreement";
 import { KIND_LABEL, currentOffer } from "../agreement/model";
 import { withSavedClaim } from "../agreement/claim";
@@ -349,6 +350,7 @@ export function EscrowWorkspace({ detail }: { detail: OrderDetail }) {
           )}
 
           {hasClaim && <AgreementPanel detail={detail} session={agreement} lines={st.lines} linesFrom={st.linesFrom} />}
+          {hasClaim && <ChatPanel detail={detail} session={agreement} />}
 
           {settled && outcome && (
             <section className="card card-strong">

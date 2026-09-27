@@ -16,7 +16,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { PublicKey } from "@solana/web3.js";
-import { agreementMessage, orderTermsMessage, type AgreementState, type AgreementWrite, type ClaimLine, type OrderTermsState, type TermsPreview } from "@cleardock/shared";
+import { agreementMessage, chatSessionMessage, orderTermsMessage, type AgreementState, type AgreementWrite, type ClaimLine, type OrderTermsState, type TermsPreview } from "@cleardock/shared";
 
 type ClaimWrite = Extract<AgreementWrite, { action: "prepare_claim" }>;
 
@@ -571,4 +571,36 @@ test("a filed claim on an order funded with signed terms gets the schedule's def
     [st.remedy?.termsVersion, st.remedy?.toBuyerMinor, st.remedy?.toSupplierMinor, st.remedy?.basis[0].refundPercent],
     [terms.current!.version, 1000, 0, 100],
   );
+});
+
+test("dispute chat: one wallet sign-in per session labels messages; commands and unsigned posts are refused", async () => {
+  const chat = (path: string, body?: object, token?: string) =>
+    fetch(`${server.base}/api/orders/${OID}/chat${path}`, {
+      method: body ? "POST" : "GET",
+      headers: { "content-type": "application/json", ...(token ? { authorization: `Bearer ${token}` } : {}) },
+      body: body && JSON.stringify(body),
+    }).then(async (r) => ({ status: r.status, body: await r.json() }));
+  const signIn = (as: "buyer" | "supplier", key: KeyObject, issuedAt = new Date().toISOString(), nonce = randomBytes(8).toString("hex")) =>
+    chat("/session", { as, issuedAt, nonce, walletSignature: sign(null, Buffer.from(chatSessionMessage(OID, as, issuedAt, nonce)), key).toString("base64") });
+
+  assert.equal((await signIn("buyer", supplier.key)).status, 401); // wrong wallet
+  assert.equal((await signIn("buyer", buyer.key, new Date(Date.now() - 3600_000).toISOString())).status, 401); // stale
+  const nonce = randomBytes(8).toString("hex");
+  const issuedAt = new Date().toISOString();
+  const b = await signIn("buyer", buyer.key, issuedAt, nonce);
+  assert.equal(b.status, 200);
+  assert.equal(b.body.wallet, buyer.address);
+  assert.equal((await signIn("buyer", buyer.key, issuedAt, nonce)).status, 401); // replayed sign-in
+
+  assert.equal((await chat("/messages", { text: "hello" })).status, 401); // no session
+  assert.equal((await chat("/messages", { text: "/offer 5" }, b.body.token)).status, 400); // offers are signed, not chatted
+  assert.equal((await chat("/messages", { text: "One bag never arrived; the station photo shows two." }, b.body.token)).status, 200);
+  const s = await signIn("supplier", supplier.key);
+  await chat("/messages", { text: "Checking the dispatch photo now.", aiAssisted: true }, s.body.token);
+  const thread = (await chat("")).body;
+  assert.deepEqual(thread.messages.map((m: { from: string; wallet: string; aiAssisted: boolean }) => [m.from, m.wallet, m.aiAssisted]), [
+    ["buyer", buyer.address, false],
+    ["supplier", supplier.address, true],
+  ]);
+  assert.equal((await chat("/assist", { draft: "can u do 5" }, b.body.token)).status, 501); // no Gemini key in tests
 });

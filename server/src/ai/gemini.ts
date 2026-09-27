@@ -23,8 +23,11 @@ export class GeminiError extends Error {
 
 export async function geminiJson(args: {
   prompt: string;
-  file: { mimeType: string; data: Buffer };
+  /** Omitted for text-only prompts. */
+  file?: { mimeType: string; data: Buffer };
   schema: object;
+  /** Defaults to geminiModel(). */
+  model?: string;
 }): Promise<unknown> {
   for (let attempt = 0; ; attempt++) {
     try {
@@ -39,12 +42,15 @@ export async function geminiJson(args: {
 
 async function callOnce(args: {
   prompt: string;
-  file: { mimeType: string; data: Buffer };
+  /** Omitted for text-only prompts. */
+  file?: { mimeType: string; data: Buffer };
   schema: object;
+  /** Defaults to geminiModel(). */
+  model?: string;
 }): Promise<unknown> {
   let res: Response;
   try {
-    res = await fetch(`${API}/${geminiModel()}:generateContent`, {
+    res = await fetch(`${API}/${args.model ?? geminiModel()}:generateContent`, {
       method: "POST",
       signal: AbortSignal.timeout(TIMEOUT_MS),
       headers: {
@@ -57,7 +63,7 @@ async function callOnce(args: {
             role: "user",
             parts: [
               { text: args.prompt },
-              { inline_data: { mime_type: args.file.mimeType, data: args.file.data.toString("base64") } },
+              ...(args.file ? [{ inline_data: { mime_type: args.file.mimeType, data: args.file.data.toString("base64") } }] : []),
             ],
           },
         ],

@@ -119,6 +119,19 @@ Separate from the settlement agreement below. Types: `OrderTerms`, `OrderTermsSt
 5. **Legacy.** An escrow linked before order terms existed shows `legacy`: nobody signed terms for it. Its events keep working; nothing is backfilled.
 6. **Remedies ("what happens if you get it wrong").** `terms.remedies` is a signed refund percentage (0–100, whole) of a claimed line's price per issue: `missing`, `damaged`, `wrong_item`. Omitted in a proposal = `DEFAULT_REMEDIES` (100/100/100), shown in the preview and so still signed. After a claim is filed on an order funded with signed terms, `AgreementState.remedy` = `remedyDefault(...)`: per line floor(price × percent / 100) to the buyer, the rest of the held amount to the supplier. It is null for reason `other`, for legacy orders, and for terms signed before schedules existed (rules v1). It is the default settlement offer, not an automatic payout: moving held money still takes both signatures, and an offer refunding less than `remedy.toBuyerMinor` should be shown as departing from the signed terms.
 
+## Dispute chat
+
+Types: `ChatMessage`, `ChatState`, `ChatSession`, `ChatAssist`, `chatSessionMessage`, `numbersPreserved`, `CHAT_PATHS`.
+
+| Method + path (under `/api/orders/:id/chat`) | Body | Auth |
+|---|---|---|
+| `GET` | – | – |
+| `POST /session` | `{ as, issuedAt, nonce, walletSignature }` → `{ token, as, wallet, expiresAt }` | wallet signs `chatSessionMessage`; `issuedAt` within 10 min; nonce single-use |
+| `POST /messages` | `{ text, aiAssisted }` | `Authorization: Bearer <token>` |
+| `POST /assist` | `{ draft }` → `{ text, model, used, note }` | bearer token |
+
+Messages are free text labelled with the signed-in party and wallet; they never move money or make offers. Text starting with `/` is refused: the web app parses `/offer`, `/counter`, `/accept`, `/reject` in code and sends them as wallet-signed agreement writes. `/assist` rewords a draft with `GEMINI_CHAT_MODEL` (default `gemini-3.1-flash-lite`); a rewrite that adds or changes any number is discarded (`used: false`). 501 without `GEMINI_API_KEY`. Sessions last 12 h; only token hashes are stored.
+
 ## Agreement (negotiating a claimed amount)
 
 Types: `AgreementState`, `AgreementWrite`, `agreementMessage()`, `AGREEMENT_PATHS` in `shared/src/contracts.ts`. Every endpoint returns the whole `AgreementState`. Amounts are integer CDT minor units. Rules: [docs/escrow-rulebook.md](docs/escrow-rulebook.md). Key invariant: `toSupplierMinor + toBuyerMinor` equals the held amount, both settle signatures required.

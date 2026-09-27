@@ -3,6 +3,8 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type {
   AgreementState,
+  ChatMessage,
+  Party,
   OrderTermsVersion,
   Capture,
   CaptureSession,
@@ -44,6 +46,17 @@ interface Db {
   agreements: AgreementRecord[];
   /** Order terms agreed before funding, per order. */
   orderTerms: OrderTermsRecord[];
+  /** Dispute chat per order. */
+  chats: ChatRecord[];
+}
+
+export interface ChatRecord {
+  orderId: string;
+  messages: ChatMessage[];
+  /** Signed-in sessions; only a hash of each token is kept. */
+  sessions: { tokenHash: string; as: Party; wallet: string; expiresAt: string }[];
+  /** Sign-in nonces already used. */
+  nonces: string[];
 }
 
 export interface OrderTermsRecord {
@@ -97,6 +110,7 @@ function seed(rehearsal = 1): Db {
     archivedOrders: [],
     agreements: [],
     orderTerms: [],
+    chats: [],
   };
 }
 
@@ -107,6 +121,7 @@ db.archivedOrders ??= [];
 db.proofs ??= [];
 db.agreements ??= [];
 db.orderTerms ??= [];
+db.chats ??= [];
 for (const o of db.orders) o.escrow ??= null;
 
 export function save() {
@@ -142,6 +157,7 @@ export function resetDb(): Order {
     proofs: keep(db.proofs),
     agreements: keep(db.agreements),
     orderTerms: keep(db.orderTerms),
+    chats: keep(db.chats),
     paymentAttempts: db.paymentAttempts,
     archivedOrders,
   });
