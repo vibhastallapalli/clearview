@@ -6,6 +6,7 @@
  * stand-in checks W is the escrow's wallet for write.as. The real ed25519 check is exercised against the
  * real server in the browser check, not here.
  */
+import { remedyDefault, type RemedySchedule } from "@cleardock/shared";
 import { ApiRequestError } from "../api";
 import type { AgreementApi } from "./client";
 import { agreementMessage, type AgreementRequest, type AgreementState, type AgreementWrite, type Party, type SettlementAttempt } from "./contract";
@@ -34,6 +35,8 @@ export class SimulatedAgreementApi implements AgreementApi {
   /** What the next settlement check on "devnet" finds for a submitted signature. */
   nextSettleOutcome: Pick<SettlementAttempt, "status" | "error"> = { status: "submitted", error: null };
   writes = 0;
+  /** The SIMULATED funded terms' remedy schedule. Null = legacy order, or terms signed before schedules existed. */
+  schedule: { remedies: RemedySchedule; termsVersion: number } | null = null;
 
   private now = () => new Date(Date.UTC(2026, 8, 27, 12, 0, this.clock++)).toISOString();
   private copy = (st: AgreementState): AgreementState => structuredClone(st);
@@ -50,7 +53,9 @@ export class SimulatedAgreementApi implements AgreementApi {
   private view(r: Rec): AgreementState {
     const st = r.st;
     const cur = st.offers.find((o) => o.id === st.currentOfferId);
-    return this.copy({ ...st, nextActor: st.claim?.status === "filed" && cur?.status === "open" ? (cur.proposedBy === "buyer" ? "supplier" : "buyer") : null });
+    const c = st.claim?.status === "filed" ? st.claim : null;
+    const remedy = c && this.schedule ? remedyDefault(c.lines, c.chain!.heldMinor, this.schedule.remedies, this.schedule.termsVersion) : null;
+    return this.copy({ ...st, remedy, nextActor: c && cur?.status === "open" ? (cur.proposedBy === "buyer" ? "supplier" : "buyer") : null });
   }
 
   private commit(r: Rec, key: string) {

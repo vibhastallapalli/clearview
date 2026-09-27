@@ -42,11 +42,35 @@ test("the draft starts from the purchase order, or the current version when ther
   assert.equal(initialDraft(null, { documents: [] }).from, null);
 });
 
+test("the remedy schedule starts at 100/100/100, or from the current version; pre-schedule terms start from the defaults", () => {
+  assert.deepEqual(initialDraft(null, { documents: [] }).remedies, { missing: "100", damaged: "100", wrong_item: "100" });
+  const cur = state("agreed");
+  cur.current!.terms.remedies = { missing: 100, damaged: 40, wrong_item: 0 };
+  assert.deepEqual(initialDraft(cur, { documents: [] }).remedies, { missing: "100", damaged: "40", wrong_item: "0" });
+  delete (cur.current!.terms as Partial<OrderTerms>).remedies;
+  assert.deepEqual(initialDraft(cur, { documents: [] }).remedies, { missing: "100", damaged: "100", wrong_item: "100" });
+});
+
+test("remedy percents are whole numbers 0 to 100, sent with the lines, and part of what is signed", async () => {
+  const line = [{ sku: null, description: "Beans", quantity: "3", unitPrice: "10" }];
+  const ok = parseDraft(line, "72", { missing: "100", damaged: " 50 ", wrong_item: "0" });
+  assert.ok(!("error" in ok));
+  assert.deepEqual(ok.remedies, { missing: 100, damaged: 50, wrong_item: 0 });
+  for (const bad of ["101", "-1", "12.5", "", "abc", "1000"])
+    assert.match((parseDraft(line, "72", { missing: "100", damaged: bad, wrong_item: "100" }) as { error: string }).error, /Damaged refund must be a whole percent from 0 to 100/, bad);
+
+  const t = terms({ remedies: { missing: 100, damaged: 50, wrong_item: 0 } });
+  const h = await termsHashOf(t);
+  assert.notEqual(h, await termsHashOf(terms()), "changing a percent changes the hash, so it is a new version both sign");
+  assert.match(await termsToSign("ord_terms_qa", "buyer", { version: 3, terms: t, termsHash: h }, "BuyerWallet111"), /missing 100%, damaged 50%, wrong item 0%/);
+});
+
 test("draft lines parse into whole cents; bad input is refused with the line number", () => {
-  const ok = parseDraft([{ sku: null, description: "Beans", quantity: "3", unitPrice: "10.5" }], "72");
-  assert.deepEqual(ok, { lines: [{ sku: null, description: "Beans", quantity: 3, unitPriceMinor: 1050 }], inspectionHours: 72 });
+  const r = { missing: "100", damaged: "100", wrong_item: "100" };
+  const ok = parseDraft([{ sku: null, description: "Beans", quantity: "3", unitPrice: "10.5" }], "72", r);
+  assert.deepEqual(ok, { lines: [{ sku: null, description: "Beans", quantity: 3, unitPriceMinor: 1050 }], inspectionHours: 72, remedies: DEFAULT_REMEDIES });
   for (const [q, p, h] of [["0", "1", "72"], ["1.5", "1", "72"], ["1", "1.005", "72"], ["1", "1", "0"], ["1", "1", "721"]])
-    assert.ok("error" in parseDraft([{ sku: null, description: "Beans", quantity: q, unitPrice: p }], h), `${q} ${p} ${h}`);
+    assert.ok("error" in parseDraft([{ sku: null, description: "Beans", quantity: q, unitPrice: p }], h, r), `${q} ${p} ${h}`);
 });
 
 test("funding is blocked unless both approved the current, non-stale version", () => {

@@ -1,5 +1,5 @@
 import { useEffect, useState, type ReactNode } from "react";
-import type { EscrowRecord, OrderDetail } from "@cleardock/shared";
+import type { EscrowRecord, OrderDetail, RemedyDefault } from "@cleardock/shared";
 import { api, money } from "../api";
 import { short } from "../format";
 import { useDemo } from "../escrow/DemoProvider";
@@ -8,7 +8,7 @@ import * as phantom from "../wallet/phantom";
 import { claimWrite } from "./claim";
 import { liveAgreementApi } from "./client";
 import type { AgreementOffer, AgreementOfferKind, AgreementState, Party, SettlementAttempt, SettlementStatus } from "./contract";
-import { KIND_LABEL, OTHER, heldMinor, offerError, parseAmountToMinor, reviewedFrom, settlePlan, splitFor, viewFor } from "./model";
+import { KIND_LABEL, OTHER, belowSchedule, heldMinor, offerError, parseAmountToMinor, remedyPrefill, reviewedFrom, settlePlan, splitFor, viewFor } from "./model";
 import type { AgreementSession } from "./session";
 import { partyOf, walletFor } from "./signer";
 
@@ -372,6 +372,8 @@ function Negotiation({ detail, session, st, held }: { detail: OrderDetail; sessi
         </p>
       )}
 
+      {st.claim?.status === "filed" && <RemedyBasis st={st} />}
+
       {v.phase === "no_offer" && (
         <p className="body">
           {st.offers.some((o) => o.status === "rejected")
@@ -381,7 +383,7 @@ function Negotiation({ detail, session, st, held }: { detail: OrderDetail; sessi
       )}
 
       {cur && v.phase === "open" && (
-        <OfferView offer={cur} label="Current offer">
+        <OfferView offer={cur} label="Current offer" remedy={st.remedy}>
           <p className={v.youAct ? "notice warn" : "note"}>
             {v.youAct ? `Your turn: accept, counter or reject ${PARTY[cur.proposedBy].name}'s offer.` : `Waiting on ${who(v.waitingOn ?? other)} to answer.`}
           </p>
@@ -407,7 +409,7 @@ function Negotiation({ detail, session, st, held }: { detail: OrderDetail; sessi
       )}
 
       {cur && cur.status === "accepted" && (
-        <OfferView offer={cur} label="Agreement reached">
+        <OfferView offer={cur} label="Agreement reached" remedy={st.remedy}>
           <p className="notice warn">
             {settling
               ? "Agreed and sent for settlement. Nothing is paid or refunded until devnet confirms it (see below)."
@@ -435,6 +437,7 @@ function Negotiation({ detail, session, st, held }: { detail: OrderDetail; sessi
         <OfferForm
           held={held}
           counterOf={countering ? cur : null}
+          remedy={st.remedy}
           busy={session.busy}
           onCancel={countering ? () => setCountering(false) : undefined}
           onSend={(kind, sup, buy) => session.propose(role, kind, sup, buy)}
@@ -458,7 +461,7 @@ function Negotiation({ detail, session, st, held }: { detail: OrderDetail; sessi
         <div className="stack-8">
           <span className="eyebrow">Earlier offers</span>
           {v.past.map((o) => (
-            <OfferView key={o.id} offer={o} past />
+            <OfferView key={o.id} offer={o} past remedy={st.remedy} />
           ))}
         </div>
       )}
@@ -471,6 +474,60 @@ function Negotiation({ detail, session, st, held }: { detail: OrderDetail; sessi
   );
 }
 
+const ISSUE: Record<string, string> = { missing: "Missing", damaged: "Damaged", wrong_item: "Wrong item", other: "Other" };
+
+/** What the signed remedy schedule says this claim is worth, line by line. Never a payout on its own. */
+function RemedyBasis({ st }: { st: AgreementState }) {
+  const r = st.remedy;
+  if (!r) {
+    const other = st.claim?.lines.some((l) => l.reason === "other");
+    return (
+      <p className="note">
+        No signed remedy schedule for this claim:{" "}
+        {other
+          ? "a claimed line's reason is \"other\", which the schedule doesn't cover."
+          : "the escrow was funded before signed terms had one (legacy order, or terms signed before remedy schedules existed)."}{" "}
+        Propose any split; both of you sign.
+      </p>
+    );
+  }
+  return (
+    <details className="stack-8" open>
+      <summary className="note">
+        Signed remedy schedule (terms v{r.termsVersion}): {money(r.toBuyerMinor)} back to the buyer · {money(r.toSupplierMinor)} to the supplier
+      </summary>
+      <div className="table-wrap">
+        <table className="table">
+          <thead>
+            <tr>
+              <th>Item</th>
+              <th>Reason</th>
+              <th className="r">Claimed</th>
+              <th className="r">Refund %</th>
+              <th className="r">Refund</th>
+            </tr>
+          </thead>
+          <tbody>
+            {r.basis.map((b, i) => (
+              <tr key={i}>
+                <td>{b.description}</td>
+                <td>{ISSUE[b.reason]}</td>
+                <td className="r">{money(b.claimedMinor)}</td>
+                <td className="r">{b.refundPercent}%</td>
+                <td className="r">{money(b.refundMinor)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <p className="note">
+        The schedule doesn't pay out by itself. It is the default offer; moving held money still takes both signatures on an offer and on
+        the settlement.
+      </p>
+    </details>
+  );
+}
+
 const STATUS_PILL: Record<AgreementOffer["status"], [string, string]> = {
   open: ["Open", "info"],
   accepted: ["Accepted", "ok"],
@@ -478,8 +535,9 @@ const STATUS_PILL: Record<AgreementOffer["status"], [string, string]> = {
   superseded: ["Superseded by a counter-offer", "muted"],
 };
 
-function OfferView({ offer, label, past, children }: { offer: AgreementOffer; label?: string; past?: boolean; children?: ReactNode }) {
+function OfferView({ offer, label, past, remedy, children }: { offer: AgreementOffer; label?: string; past?: boolean; remedy: RemedyDefault | null; children?: ReactNode }) {
   const [text, tone] = STATUS_PILL[offer.status];
+  const below = belowSchedule(offer.toBuyerMinor, remedy);
   return (
     <div className={past ? "offer past" : "offer"}>
       <div className="row between wrap">
@@ -502,6 +560,7 @@ function OfferView({ offer, label, past, children }: { offer: AgreementOffer; la
           <span className="tint-value">{money(offer.toBuyerMinor)}</span>
         </div>
       </div>
+      {below && <p className="warn-text">{below} Still valid if both of you sign it.</p>}
       {children}
     </div>
   );
@@ -516,18 +575,22 @@ const KINDS: { id: AgreementOfferKind; desc: string }[] = [
 function OfferForm({
   held,
   counterOf,
+  remedy,
   busy,
   onSend,
   onCancel,
 }: {
   held: number;
   counterOf: AgreementOffer | null;
+  remedy: RemedyDefault | null;
   busy: boolean;
   onSend: (kind: AgreementOfferKind, toSupplierMinor: number, toBuyerMinor: number) => void;
   onCancel?: () => void;
 }) {
-  const [kind, setKind] = useState<AgreementOfferKind>("full_refund");
-  const [supText, setSupText] = useState(() => (Math.floor(held / 2) / 100).toFixed(2));
+  // A first offer starts from the signed remedy schedule; a counter starts from scratch.
+  const [prefill] = useState(() => (counterOf ? null : remedyPrefill(remedy, held)));
+  const [kind, setKind] = useState<AgreementOfferKind>(prefill?.kind ?? "full_refund");
+  const [supText, setSupText] = useState(() => ((prefill?.kind === "split" ? prefill.toSupplierMinor : Math.floor(held / 2)) / 100).toFixed(2));
   const supMinor = kind === "split" ? parseAmountToMinor(supText) : 0;
   const split = supMinor === null ? null : splitFor(kind, held, supMinor);
   const err = supMinor === null ? "Enter an amount like 5.00." : split ? offerError(kind, held, split.toSupplierMinor, split.toBuyerMinor) : null;
@@ -569,7 +632,14 @@ function OfferForm({
           );
         })}
       </div>
+      {prefill && remedy && (
+        <p className="note">
+          Pre-filled from the signed remedy schedule (terms v{remedy.termsVersion}). It is a starting point, not a payout: change it if you
+          like, and nothing moves until both of you sign.
+        </p>
+      )}
       {err && <p className="warn-text">{err}</p>}
+      {!err && split && belowSchedule(split.toBuyerMinor, remedy) && <p className="warn-text">{belowSchedule(split.toBuyerMinor, remedy)}</p>}
       <div className="row wrap">
         <button className="primary" disabled={busy || !!err || !split} onClick={() => split && onSend(kind, split.toSupplierMinor, split.toBuyerMinor)}>
           {busy ? "Waiting for Phantom…" : counterOf ? `Sign and send counter-offer (replaces v${counterOf.version})` : "Sign and send offer"}

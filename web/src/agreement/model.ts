@@ -1,4 +1,4 @@
-import type { EscrowRecord } from "@cleardock/shared";
+import type { EscrowRecord, RemedyDefault } from "@cleardock/shared";
 import { money } from "../api";
 import type { AgreementOffer, AgreementOfferKind, AgreementState, AgreementWrite, Party, SettlementStatus } from "./contract";
 
@@ -165,4 +165,20 @@ export function settlePlan(latest: AgreementState, escrow: EscrowRecord | null |
   if (offer.toSupplierMinor + offer.toBuyerMinor !== held)
     return { ok: false, reason: `The agreed split doesn't add up to the ${money(held)} held on devnet.` };
   return { ok: true, offer, toSupplier: offer.toSupplierMinor, toBuyer: offer.toBuyerMinor };
+}
+
+/**
+ * The first offer's starting point from the signed remedy schedule (CONTRACTS.md "Order terms" 6), or null
+ * when there is no schedule or it doesn't fit what devnet holds. A starting point only: both still sign.
+ */
+export function remedyPrefill(remedy: RemedyDefault | null, held: number): { kind: AgreementOfferKind; toSupplierMinor: number } | null {
+  if (!remedy || remedy.toBuyerMinor + remedy.toSupplierMinor !== held) return null;
+  const kind = remedy.toSupplierMinor === 0 ? "full_refund" : remedy.toBuyerMinor === 0 ? "full_release" : "split";
+  return { kind, toSupplierMinor: remedy.toSupplierMinor };
+}
+
+/** A flag for an offer refunding the buyer less than the signed schedule. Display only: the server accepts any split both sign. */
+export function belowSchedule(toBuyerMinor: number, remedy: RemedyDefault | null): string | null {
+  if (!remedy || toBuyerMinor >= remedy.toBuyerMinor) return null;
+  return `Below the signed remedy schedule (terms v${remedy.termsVersion}): ${money(remedy.toBuyerMinor - toBuyerMinor)} less back to the buyer than the schedule's ${money(remedy.toBuyerMinor)}.`;
 }
