@@ -1,6 +1,6 @@
 import { useEffect } from "react";
 import { Link } from "react-router-dom";
-import type { EscrowRecord, LineVerdict, OrderDetail } from "@cleardock/shared";
+import type { EscrowRecord, LineVerdict, OrderDetail, OrderTermsState } from "@cleardock/shared";
 import { money } from "../api";
 import { short } from "../format";
 import {
@@ -14,11 +14,11 @@ import {
   OVERRIDE_REASON,
   overridden,
   fundRequest,
+  RETIRED_EVENTS,
   historyFor,
   orderStatus,
   scanned,
   shortSig,
-  totalOf,
   txUrl,
   usd,
   type DemoState,
@@ -33,6 +33,8 @@ import { useAgreement } from "../agreement/useAgreement";
 import { KIND_LABEL, currentOffer } from "../agreement/model";
 import { withSavedClaim } from "../agreement/claim";
 import { liveAgreementApi } from "../agreement/client";
+import { TermsPanel, useTerms } from "../terms/TermsPanel";
+import { fundingBlock } from "../terms/terms";
 
 const VERDICT: Record<LineVerdict, (discrepancyMinor: number) => [string, Tone]> = {
   match: () => ["✓ Match", "ok"],
@@ -68,6 +70,10 @@ export function EscrowWorkspace({ detail }: { detail: OrderDetail }) {
   // the claim is saved to it before the on-chain claim, and settlement offers live in it.
   const agreement = useAgreement(orderId, !!onChain, onChain);
   const hasClaim = (!!onChain && onChain.claimedMinor > 0) || !!agreement.state?.claim;
+  // Order terms both parties sign BEFORE funding (server state). Separate from the post-claim agreement above.
+  const terms = useTerms(orderId);
+  const agreedTerms = terms.state?.status === "agreed" ? terms.state.current : null;
+  const fundBlock = fundingBlock(terms.state, terms.error);
   useEffect(() => ensure(orderId, detail), [ensure, orderId, detail]);
   // Follow the chain if it moved on without this browser (reload, other device).
   useEffect(() => {
@@ -87,7 +93,8 @@ export function EscrowWorkspace({ detail }: { detail: OrderDetail }) {
   const stationReport = detail.latestCapture?.source === "station" && !!detail.latestScan && !!detail.order.comparison;
   const cpKey = isBuyer ? "supplier" : "buyer";
   const cp = PARTY[cpKey];
-  const total = onChain?.totalMinor ?? totalOf(st.lines);
+  // Before funding, the only total that means anything is the one in the order terms.
+  const total = onChain?.totalMinor ?? terms.state?.current?.terms.totalMinor ?? 0;
   const L = st.esc.locked;
   const held = onChain ? total - st.esc.released - st.esc.refunded - L : 0;
   const [stLabel, stTone] = orderStatus(st);
@@ -96,15 +103,15 @@ export function EscrowWorkspace({ detail }: { detail: OrderDetail }) {
   const claimed = claimedOf(st.lines);
   const settled = st.step === "settled";
   const pct = (v: number) => `${total ? (v / total) * 100 : 0}%`;
-  const items = itemsLine(detail);
+  const items = terms.state?.current ? termsItems(terms.state.current.terms.lines) : itemsLine(detail);
   const cpLine = isBuyer
     ? `${detail.supplier.name} · verified wallet ${short(detail.supplier.walletAddress)} · ${items}`
     : `${PARTY.buyer.name} (synthetic) · buyer wallet ${onChain ? short(onChain.buyer) : PARTY.buyer.wallet} · ${items}`;
   const wait = onChain
     ? waitCard(st, role, cp.name, stationReport ? detail.order.comparison!.summary : null)
-    : isBuyer
+    : isBuyer || !agreedTerms
       ? null
-      : (["Waiting on buyer", `${cp.name} hasn't funded the escrow yet.`, "Once they lock the order total on devnet, you're guaranteed payment for every line they accept."] as [string, string, string]);
+      : (["Waiting on buyer", `${cp.name} hasn't funded the escrow yet.`, `You both approved terms v${agreedTerms.version}. Once they lock exactly ${usd(agreedTerms.terms.totalMinor)} CDT on devnet, you're guaranteed payment for every line they accept.`] as [string, string, string]);
   const outcome =
     onChain && settled
       ? {
@@ -123,8 +130,15 @@ export function EscrowWorkspace({ detail }: { detail: OrderDetail }) {
   const cpHistory = historyFor(cpKey, st);
   // Verified on-chain events this browser didn't sign itself (reload, other device).
   const seen = new Set(st.events.map((e) => e.sig));
+  const termsV = terms.state?.status === "legacy" ? null : terms.state?.current;
   const timeline: EscrowEvent[] = [
-    ...st.events,
+    // Real, wallet-signed approvals of the current order terms (message signatures, not transactions).
+    ...(termsV?.approvals ?? []).map((a) => ({
+      label: `${a.party === "buyer" ? "Buyer" : "Supplier"} approved order terms v${termsV!.version}`,
+      detail: `Signed by ${short(a.wallet)} · ${usd(termsV!.terms.totalMinor)} · moves no funds`,
+      at: new Date(a.at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false }),
+    })),
+    ...st.events.filter((e) => !(e.sim && RETIRED_EVENTS.includes(e.label))),
     ...(onChain?.events ?? [])
       .filter((e) => !seen.has(e.signature))
       .map((e) => ({
@@ -150,23 +164,38 @@ export function EscrowWorkspace({ detail }: { detail: OrderDetail }) {
           <span className="pill-plain">
             Carrier delivered 10:42 · <b className="sim-inline">SIMULATED</b>
           </span>
-          <span className="pill-plain">{settled ? "Inspection closed" : "Inspection window · 2 d 23 h left"}</span>
+          <span className="pill-plain">{inspectionNote(terms.state)}</span>
         </div>
       </div>
 
       <div className="cols">
         <div className="col-main">
+          <TermsPanel detail={detail} role={role} terms={terms} />
+
           {!onChain && isBuyer && (
             <section className="card">
               <span className="eyebrow">Step 0 · Escrow</span>
-              <h2>Lock {usd(total)} CDT in escrow before the delivery.</h2>
-              <p className="body">
-                The escrow program on Solana devnet holds the money. It can only pay the verified supplier wallet, and the
-                amount you dispute moves only when you both sign.
-              </p>
-              <button className="primary" onClick={() => sign(orderId, fundRequest(st, detail.order.reference), detail)}>
-                Fund escrow with Phantom
-              </button>
+              {agreedTerms ? (
+                <>
+                  <h2>Lock {usd(agreedTerms.terms.totalMinor)} CDT in escrow before the delivery.</h2>
+                  <p className="body">
+                    Exactly the total in order terms v{agreedTerms.version}, which you and the supplier approved. The escrow program on
+                    Solana devnet holds the money. It can only pay the verified supplier wallet, and the amount you dispute moves
+                    only when you both sign.
+                  </p>
+                  <button className="primary" onClick={() => sign(orderId, fundRequest(agreedTerms.terms.totalMinor, detail.order.reference, agreedTerms.version), detail)}>
+                    Fund {usd(agreedTerms.terms.totalMinor)} with Phantom
+                  </button>
+                </>
+              ) : (
+                <>
+                  <h2 className="h2-sm">Funding is blocked until both parties approve the order terms.</h2>
+                  <p className="notice warn">{fundBlock}</p>
+                  <button className="primary" disabled>
+                    Fund escrow with Phantom
+                  </button>
+                </>
+              )}
             </section>
           )}
 
@@ -372,7 +401,7 @@ export function EscrowWorkspace({ detail }: { detail: OrderDetail }) {
             </div>
             <div className="escrow-total">
               <span className="escrow-amount">{usd(total)}</span>
-              <span className="muted">{onChain ? "CDT funded by buyer" : "CDT to fund"}</span>
+              <span className="muted">{onChain ? "CDT funded by buyer" : agreedTerms ? `CDT to fund · terms v${agreedTerms.version}` : "CDT to fund · terms not agreed"}</span>
             </div>
             <div className="bar" aria-hidden="true">
               <div className="bar-rel" style={{ width: pct(st.esc.released) }} />
@@ -405,6 +434,14 @@ export function EscrowWorkspace({ detail }: { detail: OrderDetail }) {
       </div>
     </>
   );
+}
+
+/** The inspection window as the signed terms state it. Informational only: nothing enforces it. */
+function inspectionNote(st: OrderTermsState | null): string {
+  if (st?.status === "legacy") return "Inspection window · none signed (legacy order) · not enforced";
+  const t = st?.current?.terms;
+  if (!t) return "Inspection window · set in the order terms · not enforced";
+  return `Inspection window · ${t.inspection.hours} h from the first station scan after funding · informational, not enforced`;
 }
 
 function Fig({ swatch, label, value }: { swatch: string; label: string; value: string }) {
@@ -541,6 +578,9 @@ function ReceivingReport({ detail }: { detail: OrderDetail }) {
   );
 }
 
+const termsItems = (lines: { quantity: number; description: string; unitPriceMinor: number }[]) =>
+  lines.map((l) => `${l.quantity} × ${l.description} at ${money(l.unitPriceMinor)}`).join(", ");
+
 function itemsLine(detail: OrderDetail) {
   const c = detail.order.comparison;
   const ordered = c?.lines.filter((l) => l.ordered);
@@ -556,7 +596,7 @@ function waitCard(st: DemoState, role: "buyer" | "supplier", cpName: string, sta
     return [
       "Waiting on buyer",
       `${cpName} hasn't inspected the delivery yet.`,
-      "The inspection window is 3 days from the carrier's delivered event. Every line they accept pays you right away.",
+      "The inspection window is informational: nothing is released or refunded when it ends. Every line they accept pays you right away.",
     ];
   if (st.step === "scanning" && !isBuyer)
     return ["Receiving · demo scan", `${cpName} is running the simulated demo scan.`, "You'll see the same receiving report they do."];

@@ -180,10 +180,8 @@ export function initialState(detail: OrderLike | null): DemoState {
     step: "delivered",
     lines,
     outcome: null,
-    events: [
-      { label: "Both parties signed the order terms", detail: "3 × Product A 500 g at $10.00 · 3-day inspection window", at: "09:12", sim: true },
-      { label: "Carrier: delivered", detail: "Inspection window starts", at: "10:42", sim: true },
-    ],
+    // Order terms approvals come from the server (web/src/terms), never from here.
+    events: [],
     esc: { released: 0, refunded: 0, locked: 0, status: "funded" },
   };
 }
@@ -191,12 +189,19 @@ export function initialState(detail: OrderLike | null): DemoState {
 const withEvent = (st: DemoState, e: Omit<EscrowEvent, "at">): EscrowEvent[] => [...st.events, { at: now(), ...e }];
 const txEvent = (tx: Tx) => ({ sig: tx.sig, sim: tx.simulated });
 
-export function fundRequest(st: DemoState, reference: string): SignRequest {
-  const total = totalOf(st.lines);
+/**
+ * Placeholder events older builds stored in the browser before order terms were real. Dropped when shown:
+ * a simulated "both signed" must never sit next to the real, wallet-signed terms.
+ */
+export const RETIRED_EVENTS = ["Both parties signed the order terms", "Carrier: delivered"];
+
+/** Funds exactly the agreed order terms total. sign.ts re-reads the terms and refuses if they aren't agreed at this amount. */
+export function fundRequest(total: number, reference: string, termsVersion: number): SignRequest {
   return {
     title: "Fund escrow",
     rows: [
       ["Order", reference],
+      ["Order terms", `v${termsVersion}, approved by buyer and supplier`],
       ["Lock in escrow", `${usd(total)} CDT`],
     ],
     chain: { action: "fund", amount: total },
