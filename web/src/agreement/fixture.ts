@@ -88,8 +88,9 @@ export class SimulatedAgreementApi implements AgreementApi {
       case "prepare_claim": {
         if (st.claim?.status === "filed") throw conflict("The claim is already filed on devnet and can't be changed.");
         if (write.lines.reduce((s, l) => s + l.claimedMinor, 0) !== write.claimedMinor) throw bad("claimedMinor must equal the sum of the lines.");
-        const { scanId, evidenceRevision, lines, claimedMinor, proofIds } = write;
-        st.claim = { status: "prepared", scanId, evidenceRevision, lines, claimedMinor, proofIds, preparedAt: this.now(), claimSignature: null, filedAt: null, chain: null };
+        if (write.decisions.some((d) => (d.suggested !== d.decided) !== !!d.overrideReason?.trim())) throw bad("Overriding the scan needs a reason (and only an override has one).");
+        const { scanId, evidenceRevision, lines, claimedMinor, proofIds, decisions } = write;
+        st.claim = { status: "prepared", scanId, evidenceRevision, lines, claimedMinor, proofIds, decisions, preparedAt: this.now(), claimSignature: null, filedAt: null, chain: null };
         break;
       }
       case "propose": {

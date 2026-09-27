@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { Comparison, Order, ScanResult } from "@cleardock/shared";
-import { STALE_EVIDENCE, initialState, linesFor, linesStale, reviewedClaim, scanLines, scanned, type DemoState } from "./demo";
+import { OVERRIDE_REASON, STALE_EVIDENCE, initialState, linesFor, linesStale, reviewedClaim, scanLines, scanned, type DemoState } from "./demo";
 
 const comparison = {
   lines: [{ sku: "A", description: "Product A 500 g", unitPriceMinor: 1000, ordered: 3, billed: 3, observed: 2 }],
@@ -37,6 +37,9 @@ test("a rescan while the report is open voids old choices and the transaction us
   let st: DemoState = { ...initialState(null), ...scanned(initialState(null), first) };
   st = { ...st, lines: st.lines.map((l, i) => (i === 1 ? { ...l, claim: true } : l)) };
   assert.equal(linesStale(st, first), false);
+  // Bag 2 was seen, so claiming it overrides the scan: refused until the buyer says why.
+  assert.throws(() => reviewedClaim(st, first, 3000), { message: OVERRIDE_REASON });
+  st = { ...st, lines: st.lines.map((l, i) => (i === 1 ? { ...l, reason: "bag torn" } : l)) };
   const before = reviewedClaim(st, first, 3000);
   assert.deepEqual(before.chain, { action: "claim", accepted: 1000, claimed: 2000 });
   assert.deepEqual(before.evidence, { scanId: "scan_1", revision: 3 });

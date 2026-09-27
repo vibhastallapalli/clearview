@@ -1,5 +1,5 @@
 import type { ClaimLine, OrderDetail } from "@cleardock/shared";
-import type { Evidence, Line, SignRequest } from "../escrow/demo";
+import { overridden, type Evidence, type Line, type SignRequest } from "../escrow/demo";
 import type { AgreementApi } from "./client";
 import type { AgreementState, AgreementWrite } from "./contract";
 import type { AgreementSession } from "./session";
@@ -18,6 +18,14 @@ export function claimWrite(st: AgreementState, detail: OrderDetail, lines: Line[
     claimedMinor: claimLines.reduce((s, l) => s + l.claimedMinor, 0),
     // Raw phone photos attached to the scan the lines were reviewed from.
     proofIds: detail.proofs.filter((p) => p.stationScanId === from.scanId).map((p) => p.id),
+    // Every reviewed line: the scan suggestion next to the buyer decision, with the reason for any override.
+    decisions: lines.map((l) => ({
+      description: l.label,
+      priceMinor: l.priceMinor,
+      suggested: l.miss ? "claim" : "accept",
+      decided: l.claim ? "claim" : "accept",
+      overrideReason: overridden(l) ? (l.reason ?? "").trim() : null,
+    })),
   };
 }
 

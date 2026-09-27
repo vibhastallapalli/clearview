@@ -169,6 +169,15 @@ const get = async () => (await call("GET", "")).body;
 const claimWrite = (expectedRevision: number, lines: ClaimLine[] = [{ sku: "SKU-A", description: "Cola 12oz", claimedMinor: 250, reason: "missing" as const }, { sku: null, description: "Lime 12oz", claimedMinor: 150, reason: "damaged" as const }]): ClaimWrite => ({
   action: "prepare_claim", as: "buyer", expectedRevision, scanId: "scan_old", evidenceRevision: 2, lines,
   claimedMinor: lines.reduce((s, l) => s + l.claimedMinor, 0), proofIds: ["prf_1"],
+  // The scan saw one Cola (accepted as suggested) and the Lime; the buyer overrides it to claim the damaged Lime.
+  decisions: [
+    { description: "Cola 12oz · unit 2", priceMinor: 250, suggested: "accept", decided: "accept", overrideReason: null },
+    ...lines.map((l) =>
+      l.reason === "damaged"
+        ? { description: l.description, priceMinor: l.claimedMinor, suggested: "accept" as const, decided: "claim" as const, overrideReason: "Can crushed; the scan can't see damage" }
+        : { description: l.description, priceMinor: l.claimedMinor, suggested: "claim" as const, decided: "claim" as const, overrideReason: null },
+    ),
+  ],
 });
 const offer = (as: "buyer" | "supplier", expectedRevision: number, kind: "full_refund" | "full_release" | "split", toSupplierMinor: number, toBuyerMinor: number, replacesOfferId: string | null = null): AgreementWrite =>
   ({ action: "propose", as, expectedRevision, kind, toSupplierMinor, toBuyerMinor, replacesOfferId });
@@ -212,6 +221,10 @@ describe("agreement", () => {
     assert.equal(await bad(claimWrite(0, one(1001))), 409); // more than the escrow holds
     assert.equal(await bad({ ...claimWrite(0), scanId: "scan_other_order" }), 400);
     assert.equal(await bad({ ...claimWrite(0), proofIds: ["prf_nope"] }), 400);
+    const d = claimWrite(0).decisions;
+    assert.equal(await bad({ ...claimWrite(0), decisions: d.map((x) => ({ ...x, overrideReason: null })) }), 400); // override without a reason
+    assert.equal(await bad({ ...claimWrite(0), decisions: d.map((x) => ({ ...x, overrideReason: "because" })) }), 400); // reason without an override
+    assert.equal(await bad({ ...claimWrite(0), decisions: d.map((x) => ({ ...x, decided: "accept" as const, overrideReason: x.suggested === "claim" ? "x" : null })) }), 400); // decisions don't match the claim
     assert.equal((await get()).revision, 0);
   });
 
@@ -223,6 +236,12 @@ describe("agreement", () => {
     assert.equal(fresh.claim?.scanId, "scan_old"); // not the newer station scan
     assert.deepEqual(fresh.claim?.lines.map((l) => l.claimedMinor), [250, 150]);
     assert.deepEqual(fresh.claim?.proofIds, ["prf_1"]);
+    // The scan suggestion is kept next to the buyer decision and the override reason.
+    assert.deepEqual(fresh.claim?.decisions.map((x) => [x.suggested, x.decided, x.overrideReason]), [
+      ["accept", "accept", null],
+      ["claim", "claim", null],
+      ["accept", "claim", "Can crushed; the scan can't see damage"],
+    ]);
     // Offers wait for a filed claim.
     assert.equal((await call("POST", "/offers", signed(offer("supplier", 1, "full_release", 400, 0), supplier.key))).status, 409);
   });

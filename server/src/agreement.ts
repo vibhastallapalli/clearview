@@ -124,6 +124,7 @@ function assertSplit(order: Order, rec: AgreementRecord, kind: AgreementOfferKin
 function prepareClaim(order: Order, body: Record<string, unknown>): AgreementState {
   if (!Array.isArray(body.lines) || body.lines.length < 1 || body.lines.length > 100) throw bad("lines must list 1 to 100 claimed lines");
   if (!Array.isArray(body.proofIds) || body.proofIds.length > 50) throw bad("proofIds must be a list of up to 50 proof ids");
+  if (!Array.isArray(body.decisions) || body.decisions.length < 1 || body.decisions.length > 200) throw bad("decisions must list 1 to 200 reviewed lines");
   const write: AgreementWrite = {
     action: "prepare_claim",
     as: "buyer",
@@ -142,6 +143,19 @@ function prepareClaim(order: Order, body: Record<string, unknown>): AgreementSta
     }),
     claimedMinor: int(body.claimedMinor, "claimedMinor", 1),
     proofIds: body.proofIds.map((p, i) => str(p, `proofIds[${i}]`, 100)),
+    decisions: body.decisions.map((raw, i) => {
+      const d = (raw ?? {}) as Record<string, unknown>;
+      const choice = (v: unknown, name: string) => {
+        if (v !== "accept" && v !== "claim") throw bad(`decisions[${i}].${name} must be "accept" or "claim"`);
+        return v;
+      };
+      const suggested = choice(d.suggested, "suggested");
+      const decided = choice(d.decided, "decided");
+      // The scan recommends, the buyer confirms: overriding it needs a reason, following it must not carry one.
+      const overrideReason = suggested === decided ? null : str(d.overrideReason, `decisions[${i}].overrideReason (required when overriding the scan)`, 500);
+      if (suggested === decided && d.overrideReason != null) throw bad(`decisions[${i}].overrideReason is only for lines that override the scan`);
+      return { description: str(d.description, `decisions[${i}].description`), priceMinor: int(d.priceMinor, `decisions[${i}].priceMinor`), suggested, decided, overrideReason };
+    }),
   };
   if (body.as !== "buyer") throw new HttpError(401, "unauthorized", "Only the buyer files a claim.");
   assertSignedBy(order, write, body.walletSignature);
@@ -152,6 +166,8 @@ function prepareClaim(order: Order, body: Record<string, unknown>): AgreementSta
   if (rec.claim?.status === "filed") throw conflict("The claim is already filed on devnet and can't be changed.");
   const escrow = order.escrow!;
   if (write.lines.reduce((s, l) => s + l.claimedMinor, 0) !== write.claimedMinor) throw bad("claimedMinor must equal the sum of the lines.");
+  if (write.decisions.filter((d) => d.decided === "claim").reduce((s, d) => s + d.priceMinor, 0) !== write.claimedMinor)
+    throw bad("The lines decided as claim must add up to claimedMinor.");
   if (escrow.status === "claimed" ? write.claimedMinor !== escrow.claimedMinor : escrow.status !== "funded" || write.claimedMinor > heldOnChain(order))
     throw conflict(`The claim must match what the escrow on devnet can hold (escrow is "${escrow.status}").`);
   const scan = db.scans.find((s) => s.id === write.scanId && s.orderId === order.id);
@@ -160,8 +176,8 @@ function prepareClaim(order: Order, body: Record<string, unknown>): AgreementSta
   if (new Set(write.proofIds).size !== write.proofIds.length || !write.proofIds.every((p) => db.proofs.some((x) => x.id === p && x.orderId === order.id)))
     throw bad("proofIds must be distinct phone proofs of this order.");
 
-  const { scanId, evidenceRevision, lines, claimedMinor, proofIds } = write;
-  rec.claim = { status: "prepared", scanId, evidenceRevision, lines, claimedMinor, proofIds, preparedAt: now(), claimSignature: null, filedAt: null, chain: null };
+  const { scanId, evidenceRevision, lines, claimedMinor, proofIds, decisions } = write;
+  rec.claim = { status: "prepared", scanId, evidenceRevision, lines, claimedMinor, proofIds, decisions, preparedAt: now(), claimSignature: null, filedAt: null, chain: null };
   commit(rec, key);
   return view(rec);
 }

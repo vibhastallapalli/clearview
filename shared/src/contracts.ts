@@ -363,6 +363,20 @@ export interface ClaimLine {
 
 export type Party = "buyer" | "supplier";
 
+/**
+ * One delivered line as the buyer reviewed it: what the station scan suggested and what the buyer decided.
+ * The scan recommends, the buyer confirms. Overriding the suggestion needs a reason.
+ */
+export interface ScanDecision {
+  description: string;
+  priceMinor: number;
+  /** From the station scan: seen → accept, not seen → claim. */
+  suggested: "accept" | "claim";
+  decided: "accept" | "claim";
+  /** Required when decided ≠ suggested, else null. */
+  overrideReason: string | null;
+}
+
 /** Monetary splits only; replacement/return logistics are deferred. */
 export type AgreementOfferKind = "full_refund" | "full_release" | "split";
 
@@ -399,6 +413,8 @@ export interface AgreementClaim {
   claimedMinor: number;
   /** Phone proof ids the buyer points to (raw photos; never assessed by AI). */
   proofIds: string[];
+  /** Every reviewed line: the scan suggestion next to the buyer decision (and reason, if overridden). */
+  decisions: ScanDecision[];
   preparedAt: string;
   /** Set when filed: the verified claim transaction and what the chain held right after it. */
   claimSignature: string | null;
@@ -460,6 +476,7 @@ export type AgreementWrite =
       lines: ClaimLine[];
       claimedMinor: number;
       proofIds: string[];
+      decisions: ScanDecision[];
     }
   | {
       action: "propose";
@@ -499,7 +516,7 @@ export type AgreementRequest = AgreementWrite & { walletSignature: string };
 export function agreementMessage(orderId: string, w: AgreementWrite): string {
   const fields: unknown[] =
     w.action === "prepare_claim"
-      ? [w.as, w.expectedRevision, w.scanId, w.evidenceRevision, w.claimedMinor, w.proofIds, w.lines.map((l) => [l.sku, l.description, l.claimedMinor, l.reason])]
+      ? [w.as, w.expectedRevision, w.scanId, w.evidenceRevision, w.claimedMinor, w.proofIds, w.lines.map((l) => [l.sku, l.description, l.claimedMinor, l.reason]), w.decisions.map((d) => [d.description, d.priceMinor, d.suggested, d.decided, d.overrideReason])]
       : w.action === "propose"
         ? [w.as, w.expectedRevision, w.kind, w.toSupplierMinor, w.toBuyerMinor, w.replacesOfferId]
         : w.action === "record_settlement"

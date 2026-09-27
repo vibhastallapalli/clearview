@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { EscrowRecord, OrderDetail } from "@cleardock/shared";
 import { ApiRequestError } from "../api";
-import type { Line } from "../escrow/demo";
+import { missingReason, type Line } from "../escrow/demo";
 import { WalletError } from "../wallet/phantom";
 import { claimWrite } from "./claim";
 import { isConflict, isNetwork, isUnavailable, isWrongWallet, type AgreementApi } from "./client";
@@ -307,4 +307,24 @@ test("a failed fresh read before signing fails closed even when older state is s
   s.state = buyer.state;
   assert.equal(await s.refresh(), false); // the precheck throws on false, so nothing is signed
   assert.ok(s.state); // the stale state is still shown, but it isn't trusted for signing
+});
+
+test("the scan suggests, the buyer confirms: an override needs a reason and is saved next to the suggestion", async () => {
+  const api = new SimulatedAgreementApi();
+  const buyer = new AgreementSession(api, ORDER, device("buyer"));
+  await buyer.refresh();
+  // The scan saw unit 2, but the buyer claims it as damaged.
+  const lines = reviewedLines.map((l) => (l.id === "A-2" ? { ...l, claim: true } : l));
+  assert.equal(missingReason(lines), true);
+  const withReason = lines.map((l) => (l.id === "A-2" ? { ...l, reason: " bag torn " } : l));
+  assert.equal(missingReason(withReason), false);
+  const w = claimWrite(buyer.state!, detail, withReason, { scanId: "scan_1", revision: 3 });
+  assert.ok(w.action === "prepare_claim");
+  assert.deepEqual(
+    w.decisions.map((d) => [d.suggested, d.decided, d.overrideReason]),
+    [["accept", "accept", null], ["accept", "claim", "bag torn"], ["claim", "claim", null]],
+  );
+  assert.equal(w.claimedMinor, 2000);
+  assert.ok(await buyer.write(w));
+  assert.equal((await api.get(ORDER)).claim?.decisions[1].overrideReason, "bag torn");
 });

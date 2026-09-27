@@ -19,7 +19,10 @@ export interface Line {
   sub: string;
   priceMinor: number;
   claim: boolean;
+  /** Not seen on the station scan, so the scan suggests claiming it. The buyer confirms or overrides. */
   miss: boolean;
+  /** Why the buyer overrode the scan suggestion. Required when claim !== miss. */
+  reason?: string;
 }
 
 export interface EscrowEvent {
@@ -164,6 +167,11 @@ const DEMO_LINES: Line[] = [
 ];
 
 export const totalOf = (lines: Line[]) => lines.reduce((sum, l) => sum + l.priceMinor, 0);
+/** The scan recommends, the buyer confirms: a line differs from the suggestion when claim !== miss. */
+export const overridden = (l: Line) => l.claim !== l.miss;
+export const missingReason = (lines: Line[]) => lines.some((l) => overridden(l) && !l.reason?.trim());
+export const OVERRIDE_REASON = "Give a reason for each line you changed from the station suggestion.";
+
 export const claimedOf = (lines: Line[]) => lines.filter((l) => l.claim).reduce((sum, l) => sum + l.priceMinor, 0);
 
 export function initialState(detail: OrderLike | null): DemoState {
@@ -245,6 +253,7 @@ export const STALE_EVIDENCE = "The station scan changed since you reviewed it. R
  */
 export function reviewedClaim(st: DemoState, detail: OrderLike, total: number): SignRequest {
   if (linesStale(st, detail)) throw new Error(STALE_EVIDENCE);
+  if (missingReason(st.lines)) throw new Error(OVERRIDE_REASON);
   const claimed = claimedOf(st.lines);
   const req = claimRequest(st);
   const ev = st.linesFrom ?? undefined;

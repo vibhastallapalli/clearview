@@ -14,6 +14,7 @@ export {
   type AgreementState,
   type AgreementWrite,
   type Party,
+  type ScanDecision,
   type SettlementAttempt,
   type SettlementStatus,
 } from "@cleardock/shared";

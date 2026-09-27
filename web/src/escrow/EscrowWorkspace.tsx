@@ -10,6 +10,9 @@ import {
   linesStale,
   reviewedClaim,
   claimedOf,
+  missingReason,
+  OVERRIDE_REASON,
+  overridden,
   fundRequest,
   historyFor,
   orderStatus,
@@ -237,6 +240,11 @@ export function EscrowWorkspace({ detail }: { detail: OrderDetail }) {
             <section className="card">
               <span className="eyebrow">Step 2 · Accept or claim</span>
               <h2>Accept what arrived. Claim what didn't.</h2>
+              <p className="notice suggest">
+                Suggested from station results: accept {st.lines.filter((l) => !l.miss).length}, claim {st.lines.filter((l) => l.miss).length}.
+                Review the recommendation, then confirm. A camera can miss an item behind another or misread a label, so you can
+                change any line; say why when you do.
+              </p>
               <div className="stack-8">
                 {st.lines.map((l) => (
                   <div key={l.id} className="line-row">
@@ -261,6 +269,19 @@ export function EscrowWorkspace({ detail }: { detail: OrderDetail }) {
                         Claim
                       </button>
                     </div>
+                    {overridden(l) && (
+                      <label className="override">
+                        <span>
+                          Changed from the station suggestion ({l.miss ? "claim" : "accept"}). Why?
+                        </span>
+                        <input
+                          value={l.reason ?? ""}
+                          maxLength={500}
+                          placeholder={l.miss ? "e.g. found it behind another bag" : "e.g. bag torn, beans spilled"}
+                          onChange={(e) => update(orderId, (s) => ({ lines: s.lines.map((x) => (x.id === l.id ? { ...x, reason: e.target.value } : x)) }))}
+                        />
+                      </label>
+                    )}
                   </div>
                 ))}
               </div>
@@ -275,8 +296,10 @@ export function EscrowWorkspace({ detail }: { detail: OrderDetail }) {
                 </div>
               </div>
               <p className="note">Filing a claim locks money. It never refunds you by itself: the supplier has to sign too.</p>
+              {missingReason(st.lines) && <p className="notice warn">{OVERRIDE_REASON}</p>}
               <button
                 className="primary"
+                disabled={missingReason(st.lines)}
                 onClick={() =>
                   sign(
                     orderId,
@@ -291,7 +314,7 @@ export function EscrowWorkspace({ detail }: { detail: OrderDetail }) {
                   )
                 }
               >
-                {claimed ? `Sign: release ${usd(total - claimed)}, claim ${usd(claimed)}` : `Sign: accept all · release ${usd(total)}`}
+                {claimed ? `Confirm and sign: release ${usd(total - claimed)}, claim ${usd(claimed)}` : `Confirm and sign: accept all · release ${usd(total)}`}
               </button>
             </section>
           )}
