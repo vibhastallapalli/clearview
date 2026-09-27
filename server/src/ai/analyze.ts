@@ -10,6 +10,7 @@ import type {
   ScanResult,
   Unit,
 } from "@cleardock/shared";
+import { toUnitCount } from "@cleardock/shared";
 import { GeminiError, geminiJson, geminiEnabled, geminiModel } from "./gemini.ts";
 
 /**
@@ -41,9 +42,12 @@ Extract this ${kind.replace("_", " ")}. It may be in English or Spanish.
 Lines:
 - One entry per billed or ordered product line. Skip subtotal, tax, shipping and total rows.
 - quantity and unit exactly as the line states them. Decimal commas are decimals: "1,5 kg" is quantity 1.5, unit "kg".
-- unit is one of bag, box, unit, g, kg. "bolsa"/"bolsas" = bag, "caja" = box, "unidad" = unit.
+- unit is one of bag, box, unit, g, kg. "bolsa"/"bolsas" = bag, "unidad"/"lata"/"can" = unit.
+  A case, pack or multipack ("case", "6-pack", "caja", "paquete") = box.
+- packSize: for a box, how many individual items one box holds, only when printed ("6-pack", "caja de 12", "12 x 355 ml") = 6 / 12 / 12.
+  A case of 12 cans is quantity 1, unit box, packSize 12, never quantity 12. Not printed = null. Other units: null.
 - unitSizeGrams: the size of one package when the line or product states it ("3 bolsas de 500 g" or "500 g bag" = 500). Otherwise null.
-- unitPriceMinor: price of ONE package (bag, box or unit) in integer cents, as printed. "$10.00/bolsa" = 1000.
+- unitPriceMinor: price of ONE package (bag, box or unit) in integer cents, as printed. "$10.00/bolsa" = 1000, "$6.00 per 6-pack" = 600.
   If only a per-kg price or only a line total is printed, set it to null and add a warning. Do not do the arithmetic.
 - sourceText: the line's text copied exactly as printed.
 - confidence: 0 to 1, how sure you are of this line.
@@ -204,6 +208,7 @@ const LINE_SCHEMA = {
     quantity: { type: "NUMBER", nullable: true },
     unit: { type: "STRING", enum: ["bag", "box", "unit", "g", "kg"], nullable: true },
     unitSizeGrams: { type: "NUMBER", nullable: true },
+    packSize: { type: "INTEGER", nullable: true },
     unitPriceMinor: { type: "INTEGER", nullable: true },
     sourceText: { type: "STRING" },
     confidence: { type: "NUMBER" },
@@ -276,19 +281,12 @@ function validateLine(v: any, warnings: string[]): ExtractedLine {
   if (!Number.isSafeInteger(v.unitPriceMinor) || v.unitPriceMinor < 0) missing.push("unit price");
   if (["bag", "box", "unit"].includes(v.unit) && !Number.isSafeInteger(v.quantity)) missing.push("whole package quantity");
   if (!isNum(v.confidence) || v.confidence < 0.8 || v.confidence > 1) missing.push("confident evidence");
-  if (missing.length > 0) {
-    warnings.push(`Could not read ${missing.join(", ")} for "${sourceText || description}". Needs manual review.`);
-    return {
-      sku: null,
-      description: `[unreadable] ${description}`,
-      quantity: 0,
-      unit: "unit",
-      unitPriceMinor: 0,
-      sourceText,
-      confidence: 0,
-    };
-  }
-  return {
+  const review = (why: string): ExtractedLine => {
+    warnings.push(`${why} for "${sourceText || description}". Needs manual review.`);
+    return { sku: null, description: `[unreadable] ${description}`, quantity: 0, unit: "unit", unitPriceMinor: 0, sourceText, confidence: 0 };
+  };
+  if (missing.length > 0) return review(`Could not read ${missing.join(", ")}`);
+  const line: ExtractedLine = {
     sku: typeof v.sku === "string" && SKUS.has(v.sku) ? v.sku : null,
     description,
     quantity: v.quantity,
@@ -297,6 +295,21 @@ function validateLine(v: any, warnings: string[]): ExtractedLine {
     unitPriceMinor: v.unitPriceMinor,
     sourceText,
     confidence: clamp01(v.confidence),
+  };
+  if (line.unit !== "box") return line;
+  // Cases become individual units here, in code, so "1 case of 12" can never be compared as 1 can.
+  // ponytail: converts to per-unit price; a LineItem.packSize contract field would keep the case price as printed.
+  const pack = v.packSize;
+  if (!Number.isSafeInteger(pack) || pack < 1) return review("Case/pack size not stated, so the number of individual items is unknown");
+  if (line.unitPriceMinor % pack !== 0)
+    return review(`Case price ${line.unitPriceMinor} cents does not divide evenly into ${pack} items`);
+  const units = line.quantity * pack;
+  return {
+    ...line,
+    description: `${description} (${line.quantity} × ${pack}-pack = ${units} units)`,
+    quantity: units,
+    unit: "unit",
+    unitPriceMinor: line.unitPriceMinor / pack,
   };
 }
 
@@ -307,7 +320,14 @@ function validateDocument(v: any) {
     fail("missing or invalid embedded instructions");
   if (v.paymentAddress !== null && typeof v.paymentAddress !== "string") fail("invalid payment address");
   const warnings: string[] = Array.isArray(v.warnings) ? v.warnings.map(String) : [];
-  const lines = v.lines.map((l: any) => validateLine(l, warnings));
+  const lines: ExtractedLine[] = v.lines.map((l: any) => validateLine(l, warnings));
+  const totalMinor = Number.isSafeInteger(v.totalMinor) && v.totalMinor >= 0 ? v.totalMinor : null;
+  const counts = lines.map((l) => (l.sku === null ? null : toUnitCount(l)));
+  if (totalMinor !== null && counts.every((c) => c !== null)) {
+    const sum = lines.reduce((acc, l, i) => acc + counts[i]! * l.unitPriceMinor, 0);
+    if (sum !== totalMinor)
+      warnings.push(`Printed total ${totalMinor} cents differs from the sum of the lines, ${sum} cents (tax, shipping or a missed line?).`);
+  }
   const address = typeof v.paymentAddress === "string" ? v.paymentAddress.trim() : "";
   return {
     supplierName: typeof v.supplierName === "string" ? v.supplierName : null,
@@ -315,7 +335,7 @@ function validateDocument(v: any) {
     currency: v.currency === "USD" ? ("USD" as const) : null,
     language: ["en", "es", "other"].includes(v.language) ? v.language : null,
     lines,
-    totalMinor: Number.isSafeInteger(v.totalMinor) && v.totalMinor >= 0 ? v.totalMinor : null,
+    totalMinor,
     paymentAddress: address || null,
     embeddedInstructions: Array.isArray(v.embeddedInstructions)
       ? v.embeddedInstructions.map(String).filter((s: string) => s.trim())
