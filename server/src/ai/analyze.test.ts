@@ -11,7 +11,7 @@ test("validated observations, provenance and exact-image cache", async (t) => {
   const dir = mkdtempSync(join(tmpdir(), "cleardock-ai-test-"));
   process.env.CLEARDOCK_DATA_DIR = dir;
   const { analyzeScan, analyzeDocument } = await import("./analyze.ts");
-  const valid = { observed: [{ sku: "PROD-A", labelText: "Product A", count: 3, confidence: 0.99 }], unreadable: [], notes: "Visible labels only." };
+  const valid = { observed: [{ sku: "PROD-A", labelText: "Product A", count: 3, confidence: 0.99 }], unreadable: [], showsDelivery: true, notes: "Visible labels only." };
   const respond = (raw: unknown, finishReason = "STOP") => {
     globalThis.fetch = async () => Response.json({ candidates: [{ finishReason, content: { parts: [{ text: JSON.stringify(raw) }] } }] });
   };
@@ -36,11 +36,19 @@ test("validated observations, provenance and exact-image cache", async (t) => {
         assert.equal(compareOrder({ orderId: "ord-test", evidenceRevision: 1, purchaseOrder: po, invoice, scan: result }).outcome, "needs_info");
       }
     });
+    await t.test("station photo that shows no delivery is needs_info, not all-missing", async () => {
+      respond({ ...valid, showsDelivery: false, notes: "Concrete floor." });
+      const result = await scan("floor-photo");
+      assert.deepEqual(result.observed, []);
+      assert.equal(result.unreadable.length, 1);
+      assert.equal(compareOrder({ orderId: "ord-test", evidenceRevision: 1, purchaseOrder: po, invoice, scan: result }).outcome, "needs_info");
+    });
     await t.test("malformed evidence rejects without replacing the good cache", async () => {
       const cache = join(dir, "ai-cache");
       const before = readdirSync(cache).map((p) => readFileSync(join(cache, p), "utf8")).sort();
       for (const raw of [
         { ...valid, unreadable: undefined },
+        { ...valid, showsDelivery: undefined },
         { ...valid, observed: [null] },
         { ...valid, observed: [{ ...valid.observed[0], count: 1.5 }] },
         { ...valid, observed: [{ ...valid.observed[0], count: Number.MAX_SAFE_INTEGER + 1 }] },
