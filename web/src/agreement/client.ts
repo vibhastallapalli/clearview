@@ -38,8 +38,12 @@ export const isUnavailable = (err: unknown) =>
 /** Someone else changed the agreement first (or this tab was behind). Refetch and ask the user to review. */
 export const isConflict = (err: unknown) => err instanceof ApiRequestError && (err.status === 409 || err.code === "stale_approval");
 
-/** No reply at all: the request may or may not have been applied. Refetch before retrying. */
-export const isNetwork = (err: unknown) => err instanceof ApiRequestError && err.status === 0;
+/**
+ * No usable reply: the request may or may not have been applied. Refetch before retrying.
+ * Includes gateway errors without an ApiError body (a proxy in front of the server gave up).
+ */
+export const isNetwork = (err: unknown) =>
+  err instanceof ApiRequestError && (err.status === 0 || (!err.code && [502, 503, 504].includes(err.status)));
 
 /** Live client for the PROPOSED paths in ./contract. Until the server has them, calls fail with isUnavailable(). */
 export const liveAgreementApi: AgreementApi = {

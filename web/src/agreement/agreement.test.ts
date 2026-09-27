@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { EscrowRecord } from "@cleardock/shared";
 import { ApiRequestError } from "../api";
-import { isConflict, isUnavailable, type AgreementApi } from "./client";
+import { isConflict, isNetwork, isUnavailable, type AgreementApi } from "./client";
 import { SimulatedAgreementApi } from "./fixture";
 import { OFFER_CHANGED, currentOffer, heldMinor, parseAmountToMinor, reviewedFrom, settlePlan, splitError, splitFor, viewFor } from "./model";
 import { AgreementSession, UNAVAILABLE } from "./session";
@@ -219,6 +219,8 @@ test("a server without the agreement API is reported as unavailable, not as an e
   assert.equal(isUnavailable(new ApiRequestError("Order x not found", 404, "not_found")), false);
   assert.equal(isUnavailable(new ApiRequestError("ESCROW_PROGRAM_ID is not configured", 501, "not_implemented")), true);
   assert.equal(isConflict(new ApiRequestError("Evidence changed", 409, "stale_approval")), true);
+  assert.equal(isNetwork(new ApiRequestError("Request failed (504)", 504)), true);
+  assert.equal(isNetwork(new ApiRequestError("Solana RPC unavailable", 503, "upstream_error")), false);
 
   const missing: AgreementApi = {
     ...bind(new SimulatedAgreementApi()),

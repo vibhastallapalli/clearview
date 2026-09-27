@@ -362,13 +362,14 @@ function Negotiation({
         </OfferView>
       )}
 
-      {cur && v.phase === "agreed" && (
+      {cur && cur.status === "accepted" && (v.phase === "agreed" || v.phase === "settling") && (
         <OfferView offer={cur} label="Agreement reached">
           <p className="notice warn">
-            Agreed, not paid: no funds have moved. The escrow still holds {money(held)} until the settlement transaction is signed by both
-            parties and confirmed on devnet.
+            {v.phase === "agreed"
+              ? `Agreed, not paid: no funds have moved. The escrow still holds ${money(held)} until the settlement transaction is signed by both parties and confirmed on devnet.`
+              : "Agreed and sent for settlement. It is not paid or refunded until devnet confirms it (see below)."}
           </p>
-          {!pending && (
+          {v.phase === "agreed" && !pending && (
             <>
               <p className="note">
                 Both signatures go on one transaction. In this build they are collected on one computer: the buyer signs in Phantom, then
