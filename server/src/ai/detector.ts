@@ -1,7 +1,5 @@
-import { readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
 import type { ObservedItem, ScanResult } from "@cleardock/shared";
+import { products } from "./analyze.ts";
 
 /**
  * Adapter for the station's custom can detector (hardware teammate's model).
@@ -34,10 +32,6 @@ export interface DetectorProvenance {
 
 export type DetectorScan = Pick<ScanResult, "observed" | "unreadable" | "notes"> & { detector: DetectorProvenance };
 
-const here = dirname(fileURLToPath(import.meta.url));
-const defaultCatalog = (): CatalogProduct[] =>
-  JSON.parse(readFileSync(join(here, "..", "..", "..", "shared", "fixtures", "products.json"), "utf8"));
-
 function fail(msg: string): never {
   throw new Error(`Detector output rejected: ${msg}`);
 }
@@ -66,7 +60,7 @@ function classMap(catalog: CatalogProduct[]) {
 export function adaptDetections(
   raw: unknown,
   expect: { orderId: string; imageSha256: string },
-  catalog: CatalogProduct[] = defaultCatalog(),
+  catalog: CatalogProduct[] = products,
 ): DetectorScan {
   const v = raw as any;
   if (!v || typeof v !== "object") fail("not an object");

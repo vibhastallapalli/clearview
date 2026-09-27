@@ -25,7 +25,11 @@ const here = dirname(fileURLToPath(import.meta.url));
 const FIXTURES = join(here, "..", "..", "..", "shared", "fixtures");
 const fixture = <T>(name: string): T => JSON.parse(readFileSync(join(FIXTURES, name), "utf8"));
 
-const products = fixture<{ sku: string; names: string[]; unitSizeGrams: number }[]>("products.json");
+// CLEARDOCK_PRODUCTS_FILE: opt-in alternate catalog for isolated evals (e.g. the PROVISIONAL soda catalog).
+// Unset = the shared demo catalog, unchanged.
+export const products: { sku: string; names: string[]; unitSizeGrams: number; detectorClasses?: string[] }[] = process.env.CLEARDOCK_PRODUCTS_FILE
+  ? JSON.parse(readFileSync(process.env.CLEARDOCK_PRODUCTS_FILE, "utf8"))
+  : fixture("products.json");
 const catalog = products.map((p) => `${p.sku}: ${p.names.join(" / ")} (${p.unitSizeGrams} g)`).join("\n");
 
 const GUARDRAILS = `You extract data for a receiving-and-payment review tool.
