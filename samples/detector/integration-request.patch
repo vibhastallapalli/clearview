@@ -410,12 +410,12 @@ index 0000000..315ce0b
 +  assert.equal(r.undisputedMinor, 750);
 +});
 diff --git a/server/src/index.ts b/server/src/index.ts
-index 36c635e..df81913 100644
+index 4568897..bec274a 100644
 --- a/server/src/index.ts
 +++ b/server/src/index.ts
-@@ -34,9 +34,10 @@ import { escrowRouter } from "./escrow.ts";
- import { agreementRouter } from "./agreement.ts";
+@@ -35,9 +35,10 @@ import { agreementRouter } from "./agreement.ts";
  import { termsRouter } from "./terms.ts";
+ import { chatRouter } from "./chat.ts";
  import { configuredMint, isValidAmount, isWallet, publicConfig, rpcUrl } from "./solana/tx.ts";
 -import { analyzeDocument, analyzeScan, type MockScenario } from "./ai/analyze.ts";
 +import { analyzeDocument, products, type MockScenario } from "./ai/analyze.ts";
@@ -425,7 +425,7 @@ index 36c635e..df81913 100644
  const app = express();
  app.use(cors());
  app.use(express.json());
-@@ -84,6 +85,11 @@ function getOrder(orderId: string): Order {
+@@ -85,6 +86,11 @@ function getOrder(orderId: string): Order {
  
  const detail = orderDetail;
  
@@ -437,7 +437,7 @@ index 36c635e..df81913 100644
  /** Any change to evidence bumps the revision, recomputes, and voids old approvals. */
  function evidenceChanged(order: Order) {
    const paying = order.payment && ["submitted", "unknown", "confirmed"].includes(order.payment.status);
-@@ -96,7 +102,7 @@ function evidenceChanged(order: Order) {
+@@ -97,7 +103,7 @@ function evidenceChanged(order: Order) {
  
    const docs = db.documents.filter((d) => order.documentIds.includes(d.id));
    const latest = (kind: DocumentKind) => docs.filter((d) => d.kind === kind).at(-1);
@@ -446,7 +446,7 @@ index 36c635e..df81913 100644
  
    order.comparison = compareOrder({
      orderId: order.id,
-@@ -104,6 +110,7 @@ function evidenceChanged(order: Order) {
+@@ -105,6 +111,7 @@ function evidenceChanged(order: Order) {
      purchaseOrder: latest("purchase_order"),
      invoice: latest("invoice"),
      scan,
@@ -454,7 +454,7 @@ index 36c635e..df81913 100644
    });
  
    if (!latest("purchase_order") || !latest("invoice")) order.status = "needs_documents";
-@@ -123,34 +130,29 @@ async function ingestCapture(args: {
+@@ -124,34 +131,29 @@ async function ingestCapture(args: {
    sensors: SensorReading[];
    mockScenario?: MockScenario;
    fixture?: string | null;
@@ -506,7 +506,7 @@ index 36c635e..df81913 100644
    order.latestCaptureId = captureId;
    order.latestScanId = scan.id;
    evidenceChanged(order);
-@@ -245,8 +247,8 @@ app.post(
+@@ -246,8 +248,8 @@ app.post(
    wrap(async (req, res) => {
      const order = getOrder(req.params.id);
      const kind = req.body.kind as DocumentKind;
@@ -517,7 +517,7 @@ index 36c635e..df81913 100644
      const file = req.file;
      if (!file) throw new HttpError(400, "bad_request", "file is required");
      const allowed = ["application/pdf", "image/png", "image/jpeg"] as const;
-@@ -332,11 +334,13 @@ app.post(
+@@ -333,11 +335,13 @@ app.post(
  
  app.post(
    "/api/station/captures",
@@ -533,7 +533,7 @@ index 36c635e..df81913 100644
      const sensors: SensorReading[] = [];
      if (req.body.weightGrams !== undefined && req.body.weightGrams !== "") {
        const grams = Number(req.body.weightGrams);
-@@ -347,9 +351,10 @@ app.post(
+@@ -348,9 +352,10 @@ app.post(
        order: getOrder(String(req.body.orderId)),
        source: "station",
        sessionId: null,
@@ -546,7 +546,7 @@ index 36c635e..df81913 100644
        fixture: typeof req.body.fixture === "string" && req.body.fixture.trim() ? req.body.fixture.trim() : null,
      });
      res.status(201).json(result);
-@@ -362,6 +367,7 @@ app.post(
+@@ -363,6 +368,7 @@ app.post(
    "/api/orders/:id/approve",
    wrap((req, res) => {
      const order = getOrder(req.params.id);
@@ -554,7 +554,7 @@ index 36c635e..df81913 100644
      const supplier = db.suppliers.find((s) => s.id === order.supplierId)!;
      if (req.body.evidenceRevision !== order.evidenceRevision)
        throw new HttpError(409, "stale_approval", "Evidence changed since you reviewed it. Review again.");
-@@ -397,6 +403,7 @@ app.post(
+@@ -398,6 +404,7 @@ app.post(
    "/api/orders/:id/payments",
    wrap((req, res) => {
      const order = getOrder(req.params.id);
@@ -562,7 +562,7 @@ index 36c635e..df81913 100644
      const approval = order.approval;
      if (!approval || approval.evidenceRevision !== order.evidenceRevision)
        throw new HttpError(409, "stale_approval", "No valid approval for the current evidence.");
-@@ -434,6 +441,7 @@ app.post(
+@@ -435,6 +442,7 @@ app.post(
  app.post(
    "/api/orders/:id/payments/transaction",
    wrap(async (req, res) => {
@@ -570,7 +570,7 @@ index 36c635e..df81913 100644
      res.json(await issueTransaction(getOrder(req.params.id), req.body?.payer, solana));
    }),
  );
-@@ -471,16 +479,20 @@ app.use(termsRouter);
+@@ -473,16 +481,20 @@ app.use(chatRouter);
  // Like /dev/reset, this must not be exposed in a real deployment.
  app.post(
    "/api/dev/orders/:id/station-photo",
@@ -730,7 +730,7 @@ index b929215..932d7c2 100644
  
    return {
 diff --git a/shared/src/contracts.ts b/shared/src/contracts.ts
-index fff35e5..ff4213b 100644
+index a97e0e6..e576fbc 100644
 --- a/shared/src/contracts.ts
 +++ b/shared/src/contracts.ts
 @@ -20,7 +20,7 @@ export type Currency = "USD";
@@ -867,10 +867,10 @@ index ea0cd7f..77ce84b 100644
    missing: { label: "! Missing", tone: "bad" },
    over: { label: "! Extra", tone: "warn" },
 diff --git a/web/src/escrow/EscrowWorkspace.tsx b/web/src/escrow/EscrowWorkspace.tsx
-index ae50057..0309e27 100644
+index d59f613..1bce09d 100644
 --- a/web/src/escrow/EscrowWorkspace.tsx
 +++ b/web/src/escrow/EscrowWorkspace.tsx
-@@ -37,6 +37,7 @@ import { TermsPanel, useTerms } from "../terms/TermsPanel";
+@@ -38,6 +38,7 @@ import { TermsPanel, useTerms } from "../terms/TermsPanel";
  import { fundingBlock } from "../terms/terms";
  
  const VERDICT: Record<LineVerdict, (discrepancyMinor: number) => [string, Tone]> = {
@@ -878,7 +878,7 @@ index ae50057..0309e27 100644
    match: () => ["✓ Match", "ok"],
    missing: (d) => [`! Missing · ${money(d)}`, "bad"],
    over: () => ["! Extra", "warn"],
-@@ -501,7 +502,7 @@ function ReceivingReport({ detail }: { detail: OrderDetail }) {
+@@ -503,7 +504,7 @@ function ReceivingReport({ detail }: { detail: OrderDetail }) {
            {real && latestScan!.analyzedBy === "cache" && <span className="sim">CACHED RESULT</span>}
            {latestCapture?.fixture && <span className="sim">SAMPLE PHOTO · SIMULATED</span>}
            <span className="pill info pill-sm">
