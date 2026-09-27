@@ -120,16 +120,16 @@ export function OrderPage() {
             {/* ---------- Delivery evidence ---------- */}
             <div className="panel">
               <div className="row between">
-                <h3>Delivery evidence</h3>
-                <button className="secondary sm" onClick={showQr} disabled={!!busy}>
-                  Capture with phone
+                <h3>Delivery evidence (station)</h3>
+                <button className="secondary sm" onClick={showQr} disabled={!!busy || latestCapture?.source !== "station"}>
+                  Add photo proof
                 </button>
               </div>
               {qr && (
                 <div className="qr">
                   <img src={qr.img} alt="QR code to open the capture page" />
                   <p className="small">
-                    Scan to capture this order. Link expires in 15 min.
+                    Scan to add a photo as proof for the station scan. It won't replace the station result. Link expires in 15 min.
                     <br />
                     <a href={qr.url} target="_blank" rel="noreferrer">
                       {qr.url}
@@ -151,7 +151,7 @@ export function OrderPage() {
                   ))}
                 </>
               ) : (
-                <p className="muted">No capture yet. Use the receiving station or a phone.</p>
+                <p className="muted">No station scan yet. Scan the delivery at the receiving station; phone photos can be added as proof after that.</p>
               )}
               {latestScan && (
                 <div className="small">
