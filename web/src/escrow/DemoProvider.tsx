@@ -16,8 +16,10 @@ function load(): Stored {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (raw) {
       const s = JSON.parse(raw) as Stored;
-      // A scan interrupted by a reload finishes on load instead of spinning forever.
-      for (const [id, st] of Object.entries(s.orders)) if (st.step === "scanning") s.orders[id] = { ...st, ...scanned(st) };
+      // A simulated scan interrupted by a reload finishes on load instead of spinning forever.
+      // A real phone scan (scanFrom set) keeps waiting for the server.
+      for (const [id, st] of Object.entries(s.orders))
+        if (st.step === "scanning" && st.scanFrom === undefined) s.orders[id] = { ...st, ...scanned(st) };
       return s;
     }
   } catch {

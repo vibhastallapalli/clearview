@@ -1,7 +1,8 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
+import QRCode from "qrcode";
 import type { EscrowRecord, LineVerdict, OrderDetail } from "@cleardock/shared";
-import { money } from "../api";
+import { api, money } from "../api";
 import { short } from "../format";
 import {
   ESCROW_STATUS,
@@ -16,6 +17,8 @@ import {
   physicalRequest,
   proposeRequest,
   rejected,
+  scanLines,
+  scanned,
   shortSig,
   totalOf,
   txUrl,
@@ -69,6 +72,42 @@ export function EscrowWorkspace({ detail }: { detail: OrderDetail }) {
     });
   }, [chainStatus, orderId, update]);
   const local = peek(orderId);
+
+  // Real scan: the phone opens the capture link from the QR, the server runs Gemini and the
+  // comparison, and OrderPage's polling brings the new scan here.
+  const [qr, setQr] = useState<{ img: string; url: string } | null>(null);
+  const [scanError, setScanError] = useState<string | null>(null);
+  const [sawAnalyzing, setSawAnalyzing] = useState(false);
+  const realScan = local?.step === "scanning" && local.scanFrom !== undefined;
+  const newScan = realScan && !!detail.order.latestScanId && detail.order.latestScanId !== local?.scanFrom;
+  const compared = newScan && !!scanLines(detail);
+  const analyzing = realScan && detail.order.status === "analyzing";
+  useEffect(() => {
+    if (analyzing) setSawAnalyzing(true);
+  }, [analyzing]);
+  useEffect(() => {
+    if (!compared) return;
+    update(orderId, (s) => scanned(s, detail));
+    setQr(null);
+    setSawAnalyzing(false);
+  }, [compared, orderId, detail, update]);
+  const startScan = async () => {
+    setScanError(null);
+    setSawAnalyzing(false);
+    try {
+      const { url } = await api.createCaptureSession(orderId);
+      setQr({ img: await QRCode.toDataURL(url, { margin: 1, width: 220 }), url });
+      update(orderId, { step: "scanning", scanFrom: detail.order.latestScanId });
+    } catch (err) {
+      setScanError(`Couldn't create a capture link: ${(err as Error).message}`);
+    }
+  };
+  const demoScan = () => {
+    setQr(null);
+    update(orderId, { scanFrom: undefined });
+    scan(orderId);
+  };
+
   if (!local) return null;
   const st: DemoState = onChain ? { ...local, esc: escFrom(onChain) } : local;
 
@@ -171,9 +210,10 @@ export function EscrowWorkspace({ detail }: { detail: OrderDetail }) {
                 Lay the bags out with labels facing up. SecuroServ compares what it sees with the purchase order and
                 invoice. The scan is evidence only and can't move money.
               </p>
-              <button className="primary" onClick={() => scan(orderId)}>
-                Scan delivery
+              <button className="primary" onClick={startScan}>
+                Scan delivery with your phone
               </button>
+              {scanError && <p className="error">{scanError}</p>}
             </section>
           )}
 
@@ -185,7 +225,52 @@ export function EscrowWorkspace({ detail }: { detail: OrderDetail }) {
             </section>
           )}
 
-          {st.step === "scanning" && isBuyer && (
+          {realScan && isBuyer && (
+            <section className="card">
+              <span className="eyebrow">Step 1 · Receiving</span>
+              {analyzing ? (
+                <div className="busy">
+                  <span className="spinner" aria-hidden="true" /> Photo received. Reading labels with Gemini…
+                </div>
+              ) : newScan && !compared ? (
+                <p className="error">
+                  The photo was scanned, but this order has no purchase order or invoice to compare it with. Upload the
+                  invoice on this page, then scan again.
+                </p>
+              ) : sawAnalyzing && !newScan ? (
+                <p className="error">The scan failed. The phone shows the reason. Take the photo again.</p>
+              ) : (
+                <h2 className="h2-sm">Scan this code with your phone and photograph the delivery, labels facing up.</h2>
+              )}
+              {qr ? (
+                <div className="qr">
+                  <img src={qr.img} alt="QR code to open the capture page on a phone" />
+                  <p className="body">
+                    <a href={qr.url} target="_blank" rel="noreferrer">
+                      {qr.url}
+                    </a>
+                    {!qr.url.startsWith("https://") && (
+                      <>
+                        <br />
+                        This link isn't HTTPS, so phone browsers will block the camera. Set PUBLIC_WEB_URL to an HTTPS
+                        tunnel and scan again.
+                      </>
+                    )}
+                  </p>
+                </div>
+              ) : (
+                <button className="secondary sm" onClick={startScan}>
+                  Show QR code again
+                </button>
+              )}
+              {scanError && <p className="error">{scanError}</p>}
+              <button className="secondary sm" onClick={demoScan}>
+                Use the demo scan instead <Sim />
+              </button>
+            </section>
+          )}
+
+          {st.step === "scanning" && !realScan && isBuyer && (
             <section className="card card-tight">
               <div className="scan-frame">
                 {detail.latestCapture && <img src={detail.latestCapture.imageUrl} alt="Delivery being scanned" />}

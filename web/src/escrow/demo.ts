@@ -1,7 +1,7 @@
-import type { Order } from "@cleardock/shared";
+import type { Order, ScanResult } from "@cleardock/shared";
 
 /** The only order data the demo needs; both OrderDetail and a queue row satisfy it. */
-export type OrderLike = { order: Order };
+export type OrderLike = { order: Order; latestScan?: ScanResult | null };
 
 // Client-side model of the $30 escrow demo (docs/escrow-rulebook.md). Every
 // money movement goes through a SignRequest. Requests with `chain` are real
@@ -67,6 +67,8 @@ export interface DemoState {
   rejected: boolean;
   events: EscrowEvent[];
   esc: { released: number; refunded: number; locked: number; status: EscrowStatus };
+  /** Set while a real phone scan is pending: the order's latestScanId when it started. */
+  scanFrom?: string | null;
 }
 
 export interface Tx {
@@ -158,6 +160,11 @@ const now = () => new Date().toLocaleTimeString([], { hour: "2-digit", minute: "
 
 /** One escrow line per ordered unit, from the real comparison when there is one. */
 export function linesFor(detail: OrderLike | null): Line[] {
+  return scanLines(detail) ?? DEMO_LINES;
+}
+
+/** Lines from a real scan compared against the PO/invoice, or null if there's nothing to compare. */
+export function scanLines(detail: OrderLike | null): Line[] | null {
   const c = detail?.order.comparison;
   if (c && detail?.order.latestScanId) {
     const lines: Line[] = [];
@@ -177,12 +184,14 @@ export function linesFor(detail: OrderLike | null): Line[] {
     }
     if (lines.length) return lines;
   }
-  return [
+  return null;
+}
+
+const DEMO_LINES: Line[] = [
     { id: "a1", label: "Product A · bag 1", sub: "Seen on scan · label matches", priceMinor: 1000, claim: false, miss: false },
     { id: "a2", label: "Product A · bag 2", sub: "Seen on scan · label matches", priceMinor: 1000, claim: false, miss: false },
     { id: "a3", label: "Product A · bag 3", sub: "Not seen · a Product B bag arrived instead", priceMinor: 1000, claim: true, miss: true },
-  ];
-}
+];
 
 export const totalOf = (lines: Line[]) => lines.reduce((sum, l) => sum + l.priceMinor, 0);
 export const claimedOf = (lines: Line[]) => lines.filter((l) => l.claim).reduce((sum, l) => sum + l.priceMinor, 0);
@@ -225,10 +234,25 @@ export function fundRequest(st: DemoState, reference: string): SignRequest {
   };
 }
 
-export const scanned = (st: DemoState): Partial<DemoState> => ({
-  step: "report",
-  events: withEvent(st, { label: "Receiving report (evidence)", detail: "Gemini saw 2 × Product A and 1 × Product B" }),
-});
+/** With a real scan and comparison, the report uses them; without one it is the SIMULATED demo scan. */
+export function scanned(st: DemoState, detail?: OrderLike): Partial<DemoState> {
+  const lines = detail ? scanLines(detail) : null;
+  const scan = detail?.latestScan;
+  if (!lines || !scan) {
+    return {
+      step: "report",
+      scanFrom: undefined,
+      events: withEvent(st, { label: "Receiving report (evidence)", detail: "Gemini saw 2 × Product A and 1 × Product B", sim: true }),
+    };
+  }
+  const seen = scan.observed.map((o) => `${o.count} × ${o.labelText}`).join(", ") || "nothing it could read";
+  return {
+    step: "report",
+    lines,
+    scanFrom: undefined,
+    events: withEvent(st, { label: "Receiving report (evidence)", detail: `${scan.analyzedBy === "mock" ? "Mock AI" : "Gemini"} saw ${seen}`, sim: scan.analyzedBy === "mock" }),
+  };
+}
 
 function settle(st: DemoState, o: Offer, tx: Tx, label: string): Partial<DemoState> {
   const L = st.esc.locked;
