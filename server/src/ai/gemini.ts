@@ -6,7 +6,8 @@
 const API = "https://generativelanguage.googleapis.com/v1beta/models";
 const TIMEOUT_MS = Number(process.env.GEMINI_TIMEOUT_MS) || 30_000;
 // Waits before each retry. Free-tier keys hit 429/503 often; two short retries ride out most spikes.
-const RETRY_DELAYS_MS = [2_000, 5_000];
+// GEMINI_NO_RETRY=1 (used by the eval): one attempt per call, so a quota limit isn't hit three times.
+const RETRY_DELAYS_MS = process.env.GEMINI_NO_RETRY ? [] : [2_000, 5_000];
 
 export const geminiEnabled = () => Boolean(process.env.GEMINI_API_KEY);
 export const geminiModel = () => process.env.GEMINI_MODEL || "gemini-3.8-flash";
@@ -15,6 +16,8 @@ export class GeminiError extends Error {
   constructor(
     message: string,
     readonly retryable = false,
+    /** For 429: Google's quota violations and retry delay, as returned. Never contains the key. */
+    readonly quota?: { status?: string; message?: string; violations: unknown[]; retryDelay: string | null },
   ) {
     super(message);
     this.name = "GeminiError";
@@ -76,8 +79,9 @@ async function callOnce(args: {
   }
 
   if (!res.ok) {
-    const body = (await res.text().catch(() => "")).slice(0, 300);
-    if (res.status === 429) throw new GeminiError("Gemini rate limit or quota reached (429). Wait a minute and retry.", true);
+    const text = await res.text().catch(() => "");
+    const body = text.slice(0, 300);
+    if (res.status === 429) throw new GeminiError("Gemini rate limit or quota reached (429). Wait a minute and retry.", true, quotaInfo(text));
     if (res.status === 401 || res.status === 403) throw new GeminiError(`Gemini rejected the API key (${res.status}). Check GEMINI_API_KEY.`);
     if (res.status >= 500) throw new GeminiError(`Gemini server error ${res.status}: ${body}`, true);
     throw new GeminiError(`Gemini ${res.status}: ${body}`);
@@ -96,4 +100,24 @@ async function callOnce(args: {
   } catch {
     throw new GeminiError("Gemini returned invalid JSON");
   }
+}
+
+/** Keep only the quota fields of a 429 body (QuotaFailure violations, RetryInfo), dropping anything else. */
+function quotaInfo(text: string) {
+  let err: any;
+  try {
+    err = JSON.parse(text)?.error;
+  } catch {
+    return { violations: [], retryDelay: null };
+  }
+  const details: any[] = Array.isArray(err?.details) ? err.details : [];
+  const pick = (t: string) => details.find((d) => String(d?.["@type"]).endsWith(t));
+  return {
+    status: typeof err?.status === "string" ? err.status : undefined,
+    message: typeof err?.message === "string" ? err.message.slice(0, 500) : undefined,
+    violations: (pick("QuotaFailure")?.violations ?? []).map((v: any) => ({
+      quotaMetric: v?.quotaMetric, quotaId: v?.quotaId, quotaDimensions: v?.quotaDimensions, quotaValue: v?.quotaValue,
+    })),
+    retryDelay: typeof pick("RetryInfo")?.retryDelay === "string" ? pick("RetryInfo").retryDelay : null,
+  };
 }

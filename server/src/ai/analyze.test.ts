@@ -117,6 +117,17 @@ test("validated observations, provenance and exact-image cache", async (t) => {
       respond({ ...raw, totalMinor: 1500 });
       assert.match((await doc()).warnings.join(), /differs from the sum of the lines, 1200/);
     });
+    await t.test("429 keeps Google's quota metadata and nothing else", async () => {
+      const violation = { quotaMetric: "m", quotaId: "GenerateRequestsPerDayPerProjectPerModel-FreeTier", quotaDimensions: { model: "x" }, quotaValue: "20" };
+      const body = { error: { code: 429, status: "RESOURCE_EXHAUSTED", message: "quota", details: [
+        { "@type": "type.googleapis.com/google.rpc.QuotaFailure", violations: [{ ...violation, extra: "dropped" }] },
+        { "@type": "type.googleapis.com/google.rpc.RetryInfo", retryDelay: "33s" },
+        { "@type": "type.googleapis.com/google.rpc.ErrorInfo", metadata: { consumer: "projects/123" } },
+      ] } };
+      globalThis.fetch = async () => Response.json(body, { status: 429 });
+      const err: any = await scan("quota-photo").catch((e) => e);
+      assert.deepEqual(err.quota, { status: "RESOURCE_EXHAUSTED", message: "quota", violations: [violation], retryDelay: "33s" });
+    });
     await t.test("no key is explicitly mock and never cached Gemini", async () => {
       delete process.env.GEMINI_API_KEY;
       const result = await scan();
