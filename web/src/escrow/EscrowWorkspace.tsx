@@ -30,6 +30,7 @@ import {
 } from "./demo";
 import { useDemo } from "./DemoProvider";
 import { ProofPanel } from "../proof/ProofPanel";
+import { StationSimulator } from "./StationSimulator";
 
 const VERDICT: Record<LineVerdict, (discrepancyMinor: number) => [string, Tone]> = {
   match: () => ["✓ Match", "ok"],
@@ -425,6 +426,7 @@ export function EscrowWorkspace({ detail }: { detail: OrderDetail }) {
 
           {(stationReport || !["delivered", "scanning"].includes(st.step)) && <ReceivingReport detail={detail} />}
           {(stationReport || detail.proofs.length > 0) && <ProofPanel detail={detail} role={role} />}
+          {isBuyer && <StationSimulator orderId={orderId} />}
         </div>
 
         <div className="col-side">

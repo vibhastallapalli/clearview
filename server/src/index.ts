@@ -454,6 +454,26 @@ app.use(escrowRouter);
 
 // ---------- dev ----------
 
+// Test aid until the station hardware exists: an uploaded photo goes through the real station path
+// (AI count -> comparison -> discrepancy), labelled as a fixture so the UI shows SIMULATED.
+// Like /dev/reset, this must not be exposed in a real deployment.
+app.post(
+  "/api/dev/orders/:id/station-photo",
+  upload.single("image"),
+  wrap(async (req, res) => {
+    if (!req.file) throw new HttpError(400, "bad_request", "image is required");
+    const result = await ingestCapture({
+      order: getOrder(req.params.id),
+      source: "station",
+      sessionId: null,
+      file: req.file,
+      sensors: [],
+      fixture: "Simulated station camera: photo uploaded in the app",
+    });
+    res.status(201).json(result);
+  }),
+);
+
 // Test aid: attach a synthetic tray photo as additional evidence ("upload"), labelled as a fixture so
 // the UI shows SIMULATED. Like /dev/reset, this must not be exposed in a real deployment.
 const SAMPLE_PROOFS = ["all_correct", "one_missing", "swapped", "label_covered"];
