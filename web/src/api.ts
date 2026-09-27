@@ -40,6 +40,12 @@ export const api = {
     ),
 
   /** Test aid: a labelled synthetic photo attached as phone proof (SIMULATED photo; assessed by the configured AI). */
+  /** Test aid until the station hardware exists: a QR link whose phone photos are the SIMULATED station scan. */
+  createStationSession: (orderId: string) =>
+    request<{ session: { code: string; expiresAt: string }; url: string }>(`/api/dev/orders/${orderId}/station-sessions`, {
+      method: "POST",
+    }),
+
   /** Test aid until the station hardware exists: an uploaded photo scanned as the station camera (SIMULATED). */
   simulateStationPhoto: (orderId: string, image: File) => {
     const fd = new FormData();
@@ -55,7 +61,7 @@ export const api = {
     }),
 
   captureSession: (code: string) =>
-    request<{ session: { orderId: string; expiresAt: string }; orderReference: string }>(
+    request<{ session: { orderId: string; expiresAt: string; purpose?: "proof" | "station" }; orderReference: string }>(
       `/api/capture-sessions/${code}`,
     ),
 

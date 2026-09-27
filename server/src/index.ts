@@ -9,6 +9,7 @@ import {
   compareOrder,
   type ApiError,
   type Capture,
+  type CaptureSession,
   type CaptureSource,
   type DocumentKind,
   type ExtractedDocument,
@@ -273,19 +274,29 @@ app.post(
 
 // ---------- routes: phone capture via QR ----------
 
-app.post("/api/orders/:id/capture-sessions", (req, res) => {
-  const order = getOrder(req.params.id);
+function createSession(order: Order, purpose: "proof" | "station") {
   const code = randomBytes(4).toString("hex");
-  const session = {
+  const session: CaptureSession = {
     id: id("ses"),
     orderId: order.id,
     code,
     createdAt: now(),
     expiresAt: new Date(Date.now() + SESSION_MINUTES * 60_000).toISOString(),
+    purpose,
   };
   db.sessions.push(session);
   save();
-  res.status(201).json({ session, url: `${PUBLIC_WEB_URL}/capture/${code}` });
+  return { session, url: `${PUBLIC_WEB_URL}/capture/${code}` };
+}
+
+app.post("/api/orders/:id/capture-sessions", (req, res) => {
+  res.status(201).json(createSession(getOrder(req.params.id), "proof"));
+});
+
+// Test aid until the station hardware exists: a QR link whose photos are the SIMULATED station scan.
+// Like /dev/reset, this must not be exposed in a real deployment.
+app.post("/api/dev/orders/:id/station-sessions", (req, res) => {
+  res.status(201).json(createSession(getOrder(req.params.id), "station"));
 });
 
 function getSession(code: string) {
@@ -307,6 +318,17 @@ app.post(
   wrap(async (req, res) => {
     const session = getSession(req.params.code);
     if (!req.file) throw new HttpError(400, "bad_request", "image is required");
+    if (session.purpose === "station") {
+      const result = await ingestCapture({
+        order: getOrder(session.orderId),
+        source: "station",
+        sessionId: session.id,
+        file: req.file,
+        sensors: [],
+        fixture: "Simulated station camera: phone photo via QR",
+      });
+      return void res.status(201).json(result);
+    }
     const result = attachPhoneProof({
       order: getOrder(session.orderId),
       sessionId: session.id,

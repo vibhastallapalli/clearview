@@ -18,9 +18,16 @@ export function CapturePage() {
   const [camError, setCamError] = useState<string | null>(null);
   const [state, setState] = useState<"idle" | "sending" | "sent">("idle");
   const [lastKind, setLastKind] = useState<ProofKind | null>(null);
+  const [station, setStation] = useState(false);
 
   useEffect(() => {
-    api.captureSession(code!).then((s) => setRef(s.orderReference)).catch((e) => setError(e.message));
+    api
+      .captureSession(code!)
+      .then((s) => {
+        setRef(s.orderReference);
+        setStation(s.session.purpose === "station");
+      })
+      .catch((e) => setError(e.message));
   }, [code]);
 
   useEffect(() => {
@@ -71,7 +78,12 @@ export function CapturePage() {
         <BrandMark />
         <span className="eyebrow">SecuroServ · photo proof</span>
       </div>
-      <h1>Add photo proof</h1>
+      <h1>{station ? "Station camera" : "Add photo proof"}</h1>
+      {station && (
+        <p className="warn-text">
+          SIMULATED station camera: this photo is the delivery scan. The AI counts it and compares it with the invoice.
+        </p>
+      )}
       <p className="muted">
         Order <span className="mono">{ref ?? "…"}</span> · labels facing up. The supplier sees this photo as proof. It
         doesn't change the station report.
@@ -91,12 +103,12 @@ export function CapturePage() {
       {!camError && (
         <div className="capture-actions">
           <button className="primary big" onClick={snap} disabled={state === "sending"}>
-            {state === "sending" ? "Sending…" : "Take live photo"}
+            {state === "sending" ? (station ? "Scanning… (about 30 s)" : "Sending…") : station ? "Take station photo" : "Take live photo"}
           </button>
         </div>
       )}
 
-      <section className="stack-8">
+      <section className="stack-8" hidden={station && !camError}>
         <span className="eyebrow">Additional evidence</span>
         <p className="small muted">
           A file from your phone (a screenshot, an earlier photo, a document). The supplier sees it marked "Uploaded file",
@@ -119,7 +131,9 @@ export function CapturePage() {
 
       {state === "sent" && lastKind && (
         <p className="ok-text">
-          ✓ {lastKind === "live" ? "Live photo" : "Uploaded file"} saved as proof. The buyer and supplier both see it on the order.
+          {station
+            ? "✓ Station scan done. Check the report on the laptop."
+            : `✓ ${lastKind === "live" ? "Live photo" : "Uploaded file"} saved as proof. The buyer and supplier both see it on the order.`}
         </p>
       )}
       {error && <p className="error">{error}</p>}

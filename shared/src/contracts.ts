@@ -93,6 +93,12 @@ export interface CaptureSession {
   code: string;
   createdAt: string;
   expiresAt: string;
+  /**
+   * "proof" (or absent): photos from this link are phone proof and never decide anything.
+   * "station": a SIMULATED station camera link, created only by the dev route until the hardware
+   * exists; its photos go through the station scan and are labelled as fixtures.
+   */
+  purpose?: "proof" | "station";
 }
 
 export interface SensorReading {
