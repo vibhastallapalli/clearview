@@ -36,6 +36,7 @@ import { termsRouter } from "./terms.ts";
 import { chatRouter } from "./chat.ts";
 import { configuredMint, isValidAmount, isWallet, publicConfig, rpcUrl } from "./solana/tx.ts";
 import { analyzeDocument, analyzeScan, type MockScenario } from "./ai/analyze.ts";
+import { parseYoloCounts, YOLO_DISABLED } from "./station-counts.ts";
 import { geminiEnabled } from "./ai/gemini.ts";
 
 const app = express();
@@ -338,6 +339,8 @@ app.post(
     if (req.header("x-station-token") !== (process.env.STATION_TOKEN || "change-me"))
       throw new HttpError(401, "unauthorized", "Bad station token");
     if (!req.file) throw new HttpError(400, "bad_request", "image is required");
+    // Validated, then refused before anything is stored: never guessed as a product, never sent to Gemini instead.
+    if (parseYoloCounts(req.body)) throw new HttpError(503, "not_implemented", YOLO_DISABLED);
     const sensors: SensorReading[] = [];
     if (req.body.weightGrams !== undefined && req.body.weightGrams !== "") {
       const grams = Number(req.body.weightGrams);

@@ -225,6 +225,40 @@ function registerTests() {
       }
     });
 
+    test("YOLO counts: malformed are rejected, valid ones (no product class) are refused; nothing becomes coffee", async () => {
+      const s = await startServer();
+      try {
+        const oid = await orderWithDocs(s);
+        const before = await getDetail(s, oid);
+        const yolo = (counts: Record<string, string>) => {
+          const f = new FormData();
+          f.append("orderId", oid);
+          for (const [k, v] of Object.entries(counts)) f.append(k, v);
+          f.append("image", new Blob([fixture(PHOTOS.allCorrect)], { type: "image/jpeg" }), "station.jpg");
+          return call(s, "POST", "/api/station/captures", f, { "x-station-token": "t" });
+        };
+        for (const bad of <Record<string, string>[]>[
+          { totalCount: "abc", normalCount: "0", damagedCount: "0" },
+          { totalCount: "-1", normalCount: "-1", damagedCount: "0" },
+          { totalCount: "2.5", normalCount: "2.5", damagedCount: "0" },
+          { totalCount: "6", normalCount: "5", damagedCount: "2" },
+          { totalCount: "6" },
+        ]) {
+          const r = await yolo(bad);
+          assert.equal(r.status, 400, JSON.stringify(bad));
+          assert.equal((r.body as any).code, "bad_request");
+        }
+        // A valid soda tray: counts but no product class, so it can't be mapped and is refused, not guessed.
+        const r = await yolo({ totalCount: "6", normalCount: "5", damagedCount: "1" });
+        assert.equal(r.status, 503, JSON.stringify(r.body));
+        assert.match((r.body as any).error, /disabled in this release/);
+        const d = await getDetail(s, oid);
+        assert.deepEqual(authoritative(d), authoritative(before), "a refused YOLO post changed the order");
+      } finally {
+        await s.stop();
+      }
+    });
+
     test("phone photo before any station scan is refused and stores nothing", async () => {
       const s = await startServer();
       try {
