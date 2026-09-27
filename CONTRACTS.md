@@ -57,8 +57,8 @@ Base `/api`. Errors are `{ error, code }` with `code` one of `not_found`, `bad_r
 | POST | `/orders/:id/documents` | multipart `kind`, `file` | `OrderDetail` |
 | POST | `/orders/:id/capture-sessions` | | `{ session, url }` (put `url` in the QR) |
 | GET | `/capture-sessions/:code` | | `{ session, orderReference }` |
-| POST | `/capture-sessions/:code/captures` | multipart `image`, `mockScenario?` | `{ capture, scan, order }` |
-| POST | `/station/captures` | header `x-station-token`; multipart `orderId`, `image`, `weightGrams?`, `simulated?`, `mockScenario?` | `{ capture, scan, order }` |
+| POST | `/capture-sessions/:code/captures` | multipart `image`, `mockScenario?` | `{ capture, proof, order }`. **Phone proof**, see below. 409 `conflict` if the order has no station scan yet |
+| POST | `/station/captures` | header `x-station-token`; multipart `orderId`, `image`, `weightGrams?`, `simulated?`, `mockScenario?` | `{ capture, scan, order }`. The **authoritative** delivery scan: sets `latestScanId`, recomputes the comparison, bumps `evidenceRevision`, voids approval |
 | POST | `/orders/:id/approve` | `{ evidenceRevision }` | `OrderDetail`, or 409 `stale_approval` |
 | POST | `/orders/:id/payments` | | `OrderDetail` (idempotent per approval; 409 if `DEMO_TOKEN_MINT` unset) |
 | POST | `/orders/:id/payments/transaction` | `{ payer }` | `PaymentTransaction`: **unsigned**. 409 if approval stale, payment submitted/confirmed/unknown, or another wallet's tx could still land; 503 if RPC down |
@@ -66,6 +66,15 @@ Base `/api`. Errors are `{ error, code }` with `code` one of `not_found`, `bad_r
 | POST | `/orders/:id/payments/confirm` | `{ signature }` | `OrderDetail`: re-check a submitted payment. 409 on mismatch, reused or unknown signature |
 | POST | `/orders/:id/escrow/events` | `{ action: "fund"|"accept_all"|"claim"|"settle", signature, escrowAddress? }` (`escrowAddress` required on the first event) | `OrderDetail` with `order.escrow` read from chain. Verifies the tx ran that instruction of `ESCROW_PROGRAM_ID` on that escrow, and the escrow account's order hash = `sha256(reference)`, supplier = verified wallet, mint = `DEMO_TOKEN_MINT`, buyer = `DEMO_BUYER_WALLET`. Same signature again = refresh. 409 on any mismatch; 501 if `ESCROW_PROGRAM_ID` unset |
 | POST | `/dev/reset` | | `{ ok, orderId, reference }`. Fresh demo order. An order that had a payment transaction is archived and the next one gets a new identity (`ord_1001_r2` / `PO-1001-R2`). 409 while a transaction could still land |
+
+## Phone proof (station result stays authoritative)
+
+- **Station scans decide.** Only `/station/captures` sets `order.latestCaptureId`/`latestScanId` and the comparison (the discrepancy).
+- **Phone photos are proof.** `/capture-sessions/:code/captures` stores the photo as a `PhoneProof` tied to the current station scan (`stationScanId`, `evidenceRevision`). It never changes `latestScanId`, `comparison`, `evidenceRevision`, `status`, `approval`, `payment` or `escrow`, and it is allowed after payment.
+- **Assessment.** The server runs the scan model on the phone photo, then **code** compares its per-product counts with the station scan: `agrees`, `differs` or `unreadable`. `status` is `pending` → `complete`, or `failed` (with `error`) if the model call fails; the photo is kept either way. Mock AI results have `analyzedBy: "mock"` and must be labelled.
+- **Stale proof.** A later station scan does not rewrite old proofs. A proof whose `stationScanId !== order.latestScanId` was assessed against an earlier station scan; show it as such.
+- **Retrieval.** `GET /orders/:id` returns `proofs: PhoneProofView[]` (newest first, each with its `capture.imageUrl`). Buyer and supplier read the same endpoint; there are no per-role views yet.
+- Photos taken before this change keep whatever they set at the time. Nothing is migrated or deleted.
 
 ## Payment flow (server ↔ web)
 

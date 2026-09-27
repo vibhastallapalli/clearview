@@ -6,6 +6,8 @@ import type {
   CaptureSession,
   ExtractedDocument,
   Order,
+  OrderDetail,
+  PhoneProof,
   ScanResult,
   Supplier,
 } from "@cleardock/shared";
@@ -29,6 +31,8 @@ interface Db {
   sessions: CaptureSession[];
   captures: Capture[];
   scans: ScanResult[];
+  /** Phone photos attached as proof to a station scan. Never drive the comparison. */
+  proofs: PhoneProof[];
   /** Every unsigned payment transaction ever issued. Survives approval voids. */
   paymentAttempts: PaymentAttempt[];
   /** Orders that had a payment transaction issued, set aside by a demo reset. Kept for the record. */
@@ -69,6 +73,7 @@ function seed(rehearsal = 1): Db {
     sessions: [],
     captures: [],
     scans: [],
+    proofs: [],
     paymentAttempts: [],
     archivedOrders: [],
   };
@@ -78,6 +83,7 @@ export const db: Db = existsSync(DB_FILE) ? JSON.parse(readFileSync(DB_FILE, "ut
 // Older db.json files predate contracts v2.
 db.paymentAttempts ??= [];
 db.archivedOrders ??= [];
+db.proofs ??= [];
 for (const o of db.orders) o.escrow ??= null;
 
 export function save() {
@@ -110,11 +116,27 @@ export function resetDb(): Order {
     sessions: keep(db.sessions),
     captures: keep(db.captures),
     scans: keep(db.scans),
+    proofs: keep(db.proofs),
     paymentAttempts: db.paymentAttempts,
     archivedOrders,
   });
   save();
   return fresh.orders[0];
+}
+
+/** OrderDetail for any route. Proofs are newest first, each with its photo. */
+export function orderDetail(order: Order): OrderDetail {
+  return {
+    order,
+    supplier: db.suppliers.find((s) => s.id === order.supplierId)!,
+    documents: db.documents.filter((d) => order.documentIds.includes(d.id)),
+    latestCapture: db.captures.find((c) => c.id === order.latestCaptureId) ?? null,
+    latestScan: db.scans.find((s) => s.id === order.latestScanId) ?? null,
+    proofs: db.proofs
+      .filter((p) => p.orderId === order.id)
+      .map((p) => ({ ...p, capture: db.captures.find((c) => c.id === p.captureId)! }))
+      .reverse(),
+  };
 }
 
 export const id = (prefix: string) => `${prefix}_${Math.random().toString(36).slice(2, 10)}`;

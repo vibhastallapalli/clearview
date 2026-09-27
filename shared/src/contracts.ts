@@ -135,6 +135,67 @@ export interface ScanResult {
   analyzedAt: string;
 }
 
+// ---------- Phone proof (supports a station result; never drives the comparison) ----------
+//
+// Station captures are the authoritative delivery evidence: they set latestScanId and the
+// comparison. Phone captures are proof attached to that station result. They are stored and
+// shown to buyer and supplier, and assessed, but never change latestScanId, the comparison,
+// evidenceRevision, approval or payment.
+
+/** What the photo supports about the station result. A close-up can support a line without being a full count. */
+export type ProofVerdict = "supports" | "contradicts" | "insufficient_evidence";
+/** How much of the delivery the photo shows. Only "full_shipment" can speak to counts of the whole order. */
+export type ProofCoverage = "full_shipment" | "partial" | "none";
+export type ProofAssessmentStatus = "pending" | "complete" | "failed";
+
+/** One station comparison line, as seen in the phone photo. */
+export interface ProofFinding {
+  /** Matches ComparisonLine.sku (or description when sku is null) of the station comparison. */
+  sku: string | null;
+  description: string;
+  stationVerdict: LineVerdict;
+  photo: "supports" | "contradicts" | "not_visible";
+  note: string;
+}
+
+export interface ProofAssessment {
+  status: ProofAssessmentStatus;
+  /** Null unless status is "complete". "insufficient_evidence" is a valid, honest answer. */
+  verdict: ProofVerdict | null;
+  coverage: ProofCoverage | null;
+  /** One entry per station comparison line the photo speaks to. */
+  findings: ProofFinding[];
+  /** What the photo shows. For a partial view these are counts in the photo, not shipment counts. */
+  observed: ObservedItem[];
+  /** Text in the image that reads like an instruction. Untrusted data: recorded, never acted on. */
+  untrustedText: string[];
+  summary: string;
+  analyzedBy: AnalysisSource | null;
+  /** Model id for live/cache results, null for mock. */
+  model: string | null;
+  /** Set when status is "failed". The photo is still kept and shown. */
+  error: string | null;
+  assessedAt: string | null;
+}
+
+export interface PhoneProof {
+  id: string;
+  orderId: string;
+  /** The exact photo: capture id and its sha256. */
+  captureId: string;
+  imageSha256: string;
+  /** The station evidence it was assessed against. Never changes, even after a new station scan. */
+  stationScanId: string;
+  stationCaptureId: string;
+  /** order.evidenceRevision (= comparison.evidenceRevision) at the time. */
+  evidenceRevision: number;
+  assessment: ProofAssessment;
+  createdAt: string;
+}
+
+/** A proof with its photo, as returned in OrderDetail. */
+export type PhoneProofView = PhoneProof & { capture: Capture };
+
 // ---------- Comparison (deterministic code, never AI) ----------
 
 export type LineVerdict =
@@ -262,8 +323,11 @@ export interface OrderDetail {
   order: Order;
   supplier: Supplier;
   documents: ExtractedDocument[];
+  /** The authoritative (station) evidence the comparison was computed from. */
   latestCapture: Capture | null;
   latestScan: ScanResult | null;
+  /** Phone proof for this order, newest first. Same for buyer and supplier. */
+  proofs: PhoneProofView[];
 }
 
 // ---------- Solana public config (GET /api/config) ----------

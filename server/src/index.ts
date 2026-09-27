@@ -13,10 +13,11 @@ import {
   type ExtractedDocument,
   type Order,
   type OrderDetail,
+  type PhoneProof,
   type SensorReading,
 } from "@cleardock/shared";
 import { Connection } from "@solana/web3.js";
-import { db, id, resetDb, save, UPLOAD_DIR } from "./store.ts";
+import { db, id, orderDetail, resetDb, save, UPLOAD_DIR } from "./store.ts";
 import {
   assertEvidenceUnlocked,
   assertNoLiveTransaction,
@@ -28,6 +29,7 @@ import {
   type PaymentCtx,
 } from "./solana/payments.ts";
 import { escrowRouter } from "./escrow.ts";
+import { assessPhoneProof } from "./proof.ts";
 import { configuredMint, isValidAmount, isWallet, publicConfig, rpcUrl } from "./solana/tx.ts";
 import { analyzeDocument, analyzeScan, type MockScenario } from "./ai/analyze.ts";
 import { geminiEnabled } from "./ai/gemini.ts";
@@ -69,16 +71,7 @@ function getOrder(orderId: string): Order {
   return order;
 }
 
-function detail(order: Order): OrderDetail {
-  const supplier = db.suppliers.find((s) => s.id === order.supplierId)!;
-  return {
-    order,
-    supplier,
-    documents: db.documents.filter((d) => order.documentIds.includes(d.id)),
-    latestCapture: db.captures.find((c) => c.id === order.latestCaptureId) ?? null,
-    latestScan: db.scans.find((s) => s.id === order.latestScanId) ?? null,
-  };
-}
+const detail = orderDetail;
 
 /** Any change to evidence bumps the revision, recomputes, and voids old approvals. */
 function evidenceChanged(order: Order) {
@@ -122,23 +115,8 @@ async function ingestCapture(args: {
   const { order, file } = args;
   if (!file.mimetype.startsWith("image/")) throw new HttpError(400, "bad_request", "Capture must be an image");
   await assertEvidenceUnlocked(order, solana);
-
-  const captureId = id("cap");
-  const ext = file.mimetype === "image/png" ? "png" : "jpg";
-  const filename = `${captureId}.${ext}`;
-  writeFileSync(join(UPLOAD_DIR, filename), file.buffer);
-
-  const capture: Capture = {
-    id: captureId,
-    orderId: order.id,
-    sessionId: args.sessionId,
-    source: args.source,
-    imageUrl: `/files/${filename}`,
-    imageSha256: sha256(file.buffer),
-    capturedAt: now(),
-    sensors: args.sensors,
-  };
-  db.captures.push(capture);
+  const capture = saveCapture(args);
+  const captureId = capture.id;
 
   const prevStatus = order.status;
   order.status = "analyzing";
@@ -165,6 +143,73 @@ async function ingestCapture(args: {
   order.latestScanId = scan.id;
   evidenceChanged(order);
   return { capture, scan, order: detail(order) };
+}
+
+/** Stores the image file and its Capture record. Changes nothing else on the order. */
+function saveCapture(args: { order: Order; source: CaptureSource; sessionId: string | null; file: Express.Multer.File; sensors: SensorReading[] }): Capture {
+  const { order, file } = args;
+  const captureId = id("cap");
+  const ext = file.mimetype === "image/png" ? "png" : "jpg";
+  const filename = `${captureId}.${ext}`;
+  writeFileSync(join(UPLOAD_DIR, filename), file.buffer);
+
+  const capture: Capture = {
+    id: captureId,
+    orderId: order.id,
+    sessionId: args.sessionId,
+    source: args.source,
+    imageUrl: `/files/${filename}`,
+    imageSha256: sha256(file.buffer),
+    capturedAt: now(),
+    sensors: args.sensors,
+  };
+  db.captures.push(capture);
+  save();
+  return capture;
+}
+
+/**
+ * Phone photo = proof for the current station result. Never changes latestScanId, the comparison,
+ * evidenceRevision, status, approval, payment or escrow, so it is allowed after payment too.
+ */
+async function attachPhoneProof(args: { order: Order; sessionId: string; file: Express.Multer.File; mockScenario?: MockScenario }) {
+  const { order, file } = args;
+  if (!file.mimetype.startsWith("image/")) throw new HttpError(400, "bad_request", "Capture must be an image");
+  const stationScan = db.scans.find((s) => s.id === order.latestScanId);
+  const stationCapture = db.captures.find((c) => c.id === stationScan?.captureId);
+  if (!stationScan || stationCapture?.source !== "station" || !order.comparison)
+    throw new HttpError(409, "conflict", "No station scan yet. Phone photos are proof for a station result; scan the delivery at the station first.");
+  const comparison = order.comparison;
+
+  const capture = saveCapture({ order, source: "phone", sessionId: args.sessionId, file, sensors: [] });
+  const proof: PhoneProof = {
+    id: id("prf"),
+    orderId: order.id,
+    captureId: capture.id,
+    imageSha256: capture.imageSha256,
+    stationScanId: stationScan.id,
+    stationCaptureId: stationCapture.id,
+    evidenceRevision: order.evidenceRevision,
+    assessment: {
+      status: "pending", verdict: null, coverage: null, findings: [], observed: [], untrustedText: [],
+      summary: "Assessing the photo…", analyzedBy: null, model: null, error: null, assessedAt: null,
+    },
+    createdAt: now(),
+  };
+  db.proofs.push(proof);
+  save();
+
+  try {
+    const out = await assessPhoneProof({
+      proofId: proof.id, captureId: capture.id, image: file.buffer, mimeType: file.mimetype,
+      stationScan, comparison, mockScenario: args.mockScenario,
+    });
+    proof.assessment = { ...proof.assessment, ...out, status: "complete", error: null, assessedAt: now() };
+  } catch (err) {
+    proof.assessment = { ...proof.assessment, status: "failed", summary: "Photo saved; not assessed.", error: (err as Error).message, assessedAt: now() };
+  }
+  save();
+  return { capture, proof, order: detail(order) };
 }
 
 /** A payment transaction may have been issued while the AI was analyzing; then keep the old evidence. */
@@ -273,12 +318,10 @@ app.post(
   wrap(async (req, res) => {
     const session = getSession(req.params.code);
     if (!req.file) throw new HttpError(400, "bad_request", "image is required");
-    const result = await ingestCapture({
+    const result = await attachPhoneProof({
       order: getOrder(session.orderId),
-      source: "phone",
       sessionId: session.id,
       file: req.file,
-      sensors: [],
       mockScenario: req.body.mockScenario,
     });
     res.status(201).json(result);

@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { Router, type NextFunction, type Request, type Response } from "express";
 import type { ApiError, EscrowRecord, Order, OrderDetail } from "@cleardock/shared";
-import { db, save } from "./store.ts";
+import { db, orderDetail, save } from "./store.ts";
 
 export type EscrowAction = "fund" | "accept_all" | "claim" | "settle";
 
@@ -182,15 +182,7 @@ function assertBelongsToOrder(state: DecodedEscrow, order: Order, verifiedWallet
   }
 }
 
-function toOrderDetail(order: Order): OrderDetail {
-  return {
-    order,
-    supplier: db.suppliers.find((s) => s.id === order.supplierId)!,
-    documents: db.documents.filter((d) => order.documentIds.includes(d.id)),
-    latestCapture: db.captures.find((c) => c.id === order.latestCaptureId) ?? null,
-    latestScan: db.scans.find((s) => s.id === order.latestScanId) ?? null,
-  };
-}
+const toOrderDetail = orderDetail;
 
 async function recordEscrowEvent(req: Request, res: Response) {
   const programId = process.env.ESCROW_PROGRAM_ID;
