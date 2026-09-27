@@ -19,6 +19,7 @@ const LINE: Record<LineVerdict, { label: string; tone: string }> = {
   missing: { label: "! Missing", tone: "bad" },
   over: { label: "! Extra", tone: "warn" },
   unexpected: { label: "! Unexpected", tone: "bad" },
+  damaged: { label: "! Damaged", tone: "bad" },
   billed_mismatch: { label: "! Billing differs", tone: "bad" },
   price_mismatch: { label: "! Price differs", tone: "bad" },
   unknown: { label: "? Unknown", tone: "warn" },

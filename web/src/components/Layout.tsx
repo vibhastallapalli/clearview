@@ -52,6 +52,9 @@ export function Layout() {
           <NavLink to="/history" className={tabClass}>
             Dispute history
           </NavLink>
+          <NavLink to="/station" className={tabClass}>
+            Station
+          </NavLink>
         </nav>
         <div className="topbar-right">
           <span className="viewing">Viewing as</span>

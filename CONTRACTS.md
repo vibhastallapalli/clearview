@@ -119,6 +119,12 @@ Separate from the settlement agreement below. Types: `OrderTerms`, `OrderTermsSt
 5. **Legacy.** An escrow linked before order terms existed shows `legacy`: nobody signed terms for it. Its events keep working; nothing is backfilled.
 6. **Remedies ("what happens if you get it wrong").** `terms.remedies` is a signed refund percentage (0–100, whole) of a claimed line's price per issue: `missing`, `damaged`, `wrong_item`. Omitted in a proposal = `DEFAULT_REMEDIES` (100/100/100), shown in the preview and so still signed. After a claim is filed on an order funded with signed terms, `AgreementState.remedy` = `remedyDefault(...)`: per line floor(price × percent / 100) to the buyer, the rest of the held amount to the supplier. It is null for reason `other`, for legacy orders, and for terms signed before schedules existed (rules v1). It is the default settlement offer, not an automatic payout: moving held money still takes both signatures, and an offer refunding less than `remedy.toBuyerMinor` should be shown as departing from the signed terms.
 
+## Station detector (YOLO)
+
+`POST /api/station/captures` (multipart, header `x-station-token`): `orderId`, `image`, and the detector's `totalCount`, `normalCount`, `damagedCount` (whole numbers, total = normal + damaged), optional `model` and `sku`. Malformed counts → 400; nothing is guessed. With counts, no AI looks at the photo: the scan is `analyzedBy: "yolo"` with `scan.detector` = the counts and model. The cans go to `sku` if sent, else to the purchase order's only product; with several products and no `sku` they stay unassigned (`sku: null`, an `unreadable` note) and the order needs review. A capture without counts still goes to Gemini/mock (labelled) for testing without the detector.
+
+Damage: `ObservedItem.damaged` → `ComparisonLine.damaged`. Damaged units are delivered but disputed: verdict `damaged` (or `missing` with the damage counted too), their value is in `discrepancyMinor` and never in `undisputedMinor`. In Step 5 they are suggested claims with reason `damaged`, so the terms' damaged remedy applies. The Station page (`/station`) shows the latest capture and counts per order, with a local-only SIMULATED test form.
+
 ## Dispute chat
 
 Types: `ChatMessage`, `ChatState`, `ChatSession`, `ChatAssist`, `chatSessionMessage`, `numbersPreserved`, `CHAT_PATHS`.

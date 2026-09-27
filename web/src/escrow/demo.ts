@@ -23,6 +23,8 @@ export interface Line {
   miss: boolean;
   /** Why the buyer overrode the scan suggestion. Required when claim !== miss. */
   reason?: string;
+  /** The claim reason if claimed: the station saw it damaged, or didn't see it. */
+  issue?: "missing" | "damaged";
 }
 
 export interface EscrowEvent {
@@ -129,6 +131,7 @@ export const AI_SOURCE: Record<AnalysisSource, string> = {
   gemini: "Gemini",
   cache: "Cached Gemini result",
   mock: "Mock AI",
+  yolo: "Station detector (YOLO)",
 };
 
 /** One escrow line per ordered unit, from the real comparison when there is one. */
@@ -143,15 +146,19 @@ export function scanLines(detail: OrderLike | null): Line[] | null {
     const lines: Line[] = [];
     for (const l of c.lines) {
       const ordered = l.ordered ?? 0;
+      // Units in order: seen intact, then seen damaged, then not seen. The scan suggests claiming the last two.
+      const observed = l.observed ?? 0;
+      const intact = observed - Math.min(l.damaged ?? 0, observed);
       for (let i = 1; i <= ordered; i++) {
-        const seen = i <= (l.observed ?? 0);
+        const issue = i <= intact ? null : i <= observed ? "damaged" : "missing";
         lines.push({
           id: `${l.sku ?? l.description}-${i}`,
           label: `${l.description} · unit ${i}`,
-          sub: seen ? "Seen on scan · label matches" : "Not seen on scan",
+          sub: issue === null ? "Seen on scan · intact" : issue === "damaged" ? "Seen on scan · damaged" : "Not seen on scan",
           priceMinor: l.unitPriceMinor,
-          claim: !seen,
-          miss: !seen,
+          claim: issue !== null,
+          miss: issue !== null,
+          ...(issue ? { issue } : {}),
         });
       }
     }

@@ -31,6 +31,8 @@ interface Tally {
   description: string;
   count: number | null;
   unitPriceMinor: number | null;
+  /** Scan only: units seen damaged. */
+  damaged?: number;
 }
 
 function tallyDocument(doc: ExtractedDocument | undefined): Map<string, Tally> {
@@ -60,8 +62,10 @@ function tallyScan(scan: ScanResult | undefined): Map<string, Tally> {
   for (const item of scan.observed) {
     const key = item.sku ?? `?${item.labelText}`;
     const prev = out.get(key);
-    if (prev) prev.count = (prev.count ?? 0) + item.count;
-    else out.set(key, { sku: item.sku, description: item.labelText, count: item.count, unitPriceMinor: null });
+    if (prev) {
+      prev.count = (prev.count ?? 0) + item.count;
+      prev.damaged = (prev.damaged ?? 0) + (item.damaged ?? 0);
+    } else out.set(key, { sku: item.sku, description: item.labelText, count: item.count, unitPriceMinor: null, damaged: item.damaged ?? 0 });
   }
   return out;
 }
@@ -129,6 +133,8 @@ export function compareOrder(input: CompareInput): Comparison {
     const ordered = o ? o.count : null;
     const billed = b ? b.count : null;
     const observed = haveScan ? (s ? s.count : 0) : null;
+    // Damaged units are delivered but disputed; only those within what was billed count against the invoice.
+    const damaged = haveScan ? Math.min(s?.damaged ?? 0, observed ?? 0) : null;
 
     let verdict: ComparisonLine["verdict"] = "match";
     let discrepancyMinor = 0;
@@ -165,14 +171,20 @@ export function compareOrder(input: CompareInput): Comparison {
       explanation = "Paperwork agrees. Delivery not captured yet.";
     } else if (observed < billed!) {
       verdict = "missing";
-      discrepancyMinor = (billed! - observed) * unitPriceMinor;
-      explanation = `Billed ${billed}, observed ${observed}: ${billed! - observed} missing (${money(discrepancyMinor)}).`;
+      const hurt = Math.min(damaged ?? 0, observed);
+      discrepancyMinor = (billed! - observed + hurt) * unitPriceMinor;
+      explanation = `Billed ${billed}, observed ${observed}: ${billed! - observed} missing${hurt ? `, ${hurt} damaged` : ""} (${money(discrepancyMinor)}).`;
+    } else if ((damaged ?? 0) > 0) {
+      verdict = "damaged";
+      const hurt = Math.min(damaged!, billed!);
+      discrepancyMinor = hurt * unitPriceMinor;
+      explanation = `All ${billed} billed delivered, but ${hurt} seen damaged (${money(discrepancyMinor)}).`;
     } else if (observed > ordered) {
       verdict = "over";
       explanation = `Observed ${observed}, ordered ${ordered}.`;
     }
 
-    lines.push({ sku, description, unitPriceMinor, ordered, billed, observed, verdict, discrepancyMinor, explanation });
+    lines.push({ sku, description, unitPriceMinor, ordered, billed, observed, damaged, verdict, discrepancyMinor, explanation });
   }
 
   const unreadable = input.scan?.unreadable.length ?? 0;
@@ -192,7 +204,8 @@ export function compareOrder(input: CompareInput): Comparison {
   const undisputedMinor = lines.reduce((acc, l) => {
     if (l.sku === null || l.ordered === null || l.billed === null || l.observed === null) return acc;
     if (l.verdict === "price_mismatch" || l.verdict === "billed_mismatch") return acc;
-    return acc + Math.min(l.ordered, l.billed, l.observed) * l.unitPriceMinor;
+    // Damaged units are disputed, never undisputed.
+    return acc + Math.max(0, Math.min(l.ordered, l.billed, l.observed) - (l.damaged ?? 0)) * l.unitPriceMinor;
   }, 0);
 
   return {

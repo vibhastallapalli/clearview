@@ -76,3 +76,17 @@ test("the report names cached AI results as cached and never calls an empty read
   assert.match(empty.events!.at(-1)!.detail, /read no packages\. Check the tray and scan again\./);
   assert.doesNotMatch(empty.events!.at(-1)!.detail, /saw/);
 });
+
+test("detector damage: seen-damaged units are suggested claims with reason damaged, unseen ones missing", async () => {
+  const c = { lines: [{ ...comparison.lines[0], observed: 2, damaged: 1 }] } as Comparison;
+  const lines = scanLines(order({ comparison: c, latestScanId: "scan_y" }))!;
+  assert.deepEqual(lines.map((l) => [l.sub, l.claim, l.issue ?? null]), [
+    ["Seen on scan · intact", false, null],
+    ["Seen on scan · damaged", true, "damaged"],
+    ["Not seen on scan", true, "missing"],
+  ]);
+  const { claimWrite } = await import("../agreement/claim");
+  const w = claimWrite({ revision: 0 } as never, { proofs: [] } as never, lines, { scanId: "scan_y", revision: 1 });
+  assert.ok(w.action === "prepare_claim");
+  assert.deepEqual(w.lines.map((l) => l.reason), ["damaged", "missing"]);
+});

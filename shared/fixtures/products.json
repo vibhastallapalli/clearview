@@ -1,4 +1,6 @@
 [
   { "sku": "PROD-A", "names": ["Product A", "Producto A", "Café en grano Producto A"], "unitSizeGrams": 500 },
-  { "sku": "PROD-B", "names": ["Product B", "Producto B"], "unitSizeGrams": 500 }
+  { "sku": "PROD-B", "names": ["Product B", "Producto B"], "unitSizeGrams": 500 },
+  { "sku": "RB-ORIGINAL-250ML", "names": ["Red Bull Original 250 ml", "Red Bull Energy Drink 250 ml", "Red Bull 8.4 fl oz"] },
+  { "sku": "RB-SUGARFREE-250ML", "names": ["Red Bull Sugarfree 250 ml", "Red Bull sin azucar 250 ml", "Red Bull Sugarfree 8.4 fl oz"] }
 ]

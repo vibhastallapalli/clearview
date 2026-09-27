@@ -5,6 +5,7 @@ import { OrdersPage } from "./pages/OrdersPage";
 import { OrderPage } from "./pages/OrderPage";
 import { CapturePage } from "./pages/CapturePage";
 import { HistoryPage } from "./pages/HistoryPage";
+import { StationPage } from "./pages/StationPage";
 import { Layout } from "./components/Layout";
 import { DemoProvider } from "./escrow/DemoProvider";
 import "./styles.css";
@@ -21,6 +22,7 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
             <Route path="/orders" element={<OrdersPage />} />
             <Route path="/orders/:id" element={<OrderPage />} />
             <Route path="/history" element={<HistoryPage />} />
+            <Route path="/station" element={<StationPage />} />
           </Route>
         </Routes>
       </DemoProvider>

@@ -20,7 +20,8 @@ export type Currency = "USD";
 /** Units we can convert between deterministically. */
 export type Unit = "bag" | "box" | "unit" | "g" | "kg";
 
-export type AnalysisSource = "gemini" | "mock" | "cache";
+/** "yolo" = the station's trained detector (counts sent with the photo). Never Gemini. */
+export type AnalysisSource = "gemini" | "mock" | "cache" | "yolo";
 
 // ---------- Suppliers ----------
 
@@ -126,6 +127,8 @@ export interface ObservedItem {
   count: number;
   /** 0..1 */
   confidence: number;
+  /** How many of `count` the detector saw as damaged. Damaged units are present but disputed. */
+  damaged?: number;
 }
 
 export interface ScanResult {
@@ -138,6 +141,8 @@ export interface ScanResult {
   notes: string;
   analyzedBy: AnalysisSource;
   analyzedAt: string;
+  /** Set when the station's detector produced the counts (analyzedBy "yolo"). */
+  detector?: { model: string | null; totalCount: number; normalCount: number; damagedCount: number };
 }
 
 // ---------- Phone proof (evidence for the seller; never drives the comparison, never read by AI) ----------
@@ -179,6 +184,7 @@ export type LineVerdict =
   | "missing" // observed fewer than ordered
   | "over" // observed more than ordered
   | "unexpected" // observed a product that was not ordered
+  | "damaged" // delivered, but some units were seen damaged
   | "billed_mismatch" // invoice quantity differs from PO
   | "price_mismatch" // invoice unit price differs from PO
   | "unknown"; // not enough evidence
@@ -190,6 +196,8 @@ export interface ComparisonLine {
   ordered: number | null;
   billed: number | null;
   observed: number | null;
+  /** Units seen damaged (part of observed). Null without a scan. */
+  damaged?: number | null;
   verdict: LineVerdict;
   /** Value of the difference between what was billed and what was observed. */
   discrepancyMinor: number;

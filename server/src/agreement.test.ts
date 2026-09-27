@@ -604,3 +604,36 @@ test("dispute chat: one wallet sign-in per session labels messages; commands and
   ]);
   assert.equal((await chat("/assist", { draft: "can u do 5" }, b.body.token)).status, 501); // no Gemini key in tests
 });
+
+test("station detector counts: validated, no AI involved, cans mapped to the order's product, damage kept", async () => {
+  const station = (fields: Record<string, string>) => {
+    const f = new FormData();
+    f.set("orderId", OID);
+    for (const [k, v] of Object.entries(fields)) f.set(k, v);
+    f.set("image", new Blob([readFileSync(join(REPO, "samples/photos/synthetic/one_missing.jpg"))], { type: "image/jpeg" }), "tray.jpg");
+    return fetch(`${server.base}/api/station/captures`, { method: "POST", headers: { "x-station-token": process.env.STATION_TOKEN || "change-me" }, body: f })
+      .then(async (r) => ({ status: r.status, body: await r.json() }));
+  };
+  for (const bad of <Record<string, string>[]>[
+    { totalCount: "4", normalCount: "3", damagedCount: "2" }, // doesn't add up
+    { totalCount: "3", normalCount: "abc", damagedCount: "0" },
+    { totalCount: "3", normalCount: "3" }, // damagedCount missing
+    { totalCount: "-1", normalCount: "0", damagedCount: "0" },
+    { totalCount: "2.5", normalCount: "2.5", damagedCount: "0" },
+  ])
+    assert.equal((await station(bad)).status, 400, JSON.stringify(bad));
+
+  // No purchase order on this order and no sku sent: the cans stay unassigned and the order needs review.
+  const unassigned = await station({ totalCount: "3", normalCount: "2", damagedCount: "1", model: "cans-yolo-v1" });
+  assert.equal(unassigned.status, 201, JSON.stringify(unassigned.body));
+  assert.equal(unassigned.body.scan.analyzedBy, "yolo");
+  assert.deepEqual(unassigned.body.scan.detector, { model: "cans-yolo-v1", totalCount: 3, normalCount: 2, damagedCount: 1 });
+  assert.equal(unassigned.body.scan.observed[0].sku, null);
+  assert.equal(unassigned.body.scan.unreadable.length, 1);
+
+  // Naming the product assigns them; the damaged can is kept on the comparison line.
+  const named = await station({ totalCount: "3", normalCount: "2", damagedCount: "1", sku: "PROD-A" });
+  assert.equal(named.body.scan.observed[0].sku, "PROD-A");
+  assert.equal(named.body.scan.observed[0].damaged, 1);
+  assert.equal(named.body.order.order.comparison.lines.find((l: { sku: string }) => l.sku === "PROD-A").damaged, 1);
+});

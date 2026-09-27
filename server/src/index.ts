@@ -16,6 +16,7 @@ import {
   type OrderDetail,
   type PhoneProof,
   type ProofKind,
+  type ScanResult,
   type SensorReading,
 } from "@cleardock/shared";
 import { Connection } from "@solana/web3.js";
@@ -124,6 +125,8 @@ async function ingestCapture(args: {
   sensors: SensorReading[];
   mockScenario?: MockScenario;
   fixture?: string | null;
+  /** Counts from the station's trained detector. When present, no AI looks at the photo. */
+  detector?: DetectorCounts;
 }) {
   const { order, file } = args;
   if (!file.mimetype.startsWith("image/")) throw new HttpError(400, "bad_request", "Capture must be an image");
@@ -135,9 +138,11 @@ async function ingestCapture(args: {
   order.status = "analyzing";
   save();
 
-  let scan;
+  let scan: ScanResult;
   try {
-    scan = await analyzeScan({
+    scan = args.detector
+      ? detectorScan(order, captureId, args.detector)
+      : await analyzeScan({
       orderId: order.id,
       captureId,
       scanId: id("scan"),
@@ -156,6 +161,66 @@ async function ingestCapture(args: {
   order.latestScanId = scan.id;
   evidenceChanged(order);
   return { capture, scan, order: detail(order) };
+}
+
+// ---------- station detector (YOLO) ----------
+
+interface DetectorCounts {
+  totalCount: number;
+  normalCount: number;
+  damagedCount: number;
+  model: string | null;
+  sku: string | null;
+}
+
+/**
+ * The detector's counts from a station upload (multipart fields totalCount, normalCount, damagedCount,
+ * optional model and sku), or null if none were sent. Anything malformed is rejected, never guessed.
+ */
+function detectorCounts(body: Record<string, unknown>): DetectorCounts | null {
+  const names = ["totalCount", "normalCount", "damagedCount"] as const;
+  if (names.every((n) => body[n] === undefined || body[n] === "")) return null;
+  const [totalCount, normalCount, damagedCount] = names.map((n) => {
+    const v = String(body[n] ?? "").trim();
+    if (!/^\d{1,5}$/.test(v)) throw new HttpError(400, "bad_request", `${n} must be a whole number of at least 0 (got "${v}")`);
+    return Number(v);
+  });
+  if (totalCount !== normalCount + damagedCount)
+    throw new HttpError(400, "bad_request", `totalCount (${totalCount}) must equal normalCount + damagedCount (${normalCount} + ${damagedCount})`);
+  const text = (v: unknown, name: string) => {
+    if (v === undefined || v === "") return null;
+    if (typeof v !== "string" || v.length > 100) throw new HttpError(400, "bad_request", `${name} must be text of up to 100 characters`);
+    return v.trim();
+  };
+  return { totalCount, normalCount, damagedCount, model: text(body.model, "model"), sku: text(body.sku, "sku") };
+}
+
+/**
+ * A scan from detector counts. The cans are assigned to the SKU the station names, or to the purchase
+ * order's only product. With several products on the order and no SKU, they stay unassigned (sku null),
+ * so the comparison asks for review instead of guessing.
+ */
+function detectorScan(order: Order, captureId: string, d: DetectorCounts): ScanResult {
+  const po = db.documents.filter((doc) => order.documentIds.includes(doc.id) && doc.kind === "purchase_order").at(-1);
+  const poLines = (po?.lines ?? []).filter((l) => l.sku);
+  const skus = [...new Set(poLines.map((l) => l.sku!))];
+  const sku = d.sku ?? (skus.length === 1 ? skus[0] : null);
+  const label = poLines.find((l) => l.sku === sku)?.description ?? (sku ? sku : "Can (not assigned to a product)");
+  const unreadable =
+    sku === null && d.totalCount > 0
+      ? [`Detector counted ${d.totalCount} can(s), but the purchase order has ${skus.length || "no"} product(s) and the station didn't say which. Review which product these are.`]
+      : [];
+  return {
+    id: id("scan"),
+    orderId: order.id,
+    captureId,
+    observed: d.totalCount > 0 ? [{ sku, labelText: label, count: d.totalCount, confidence: 1, damaged: d.damagedCount }] : [],
+    unreadable,
+    notes: `Station detector${d.model ? ` (${d.model})` : ""}: ${d.totalCount} total, ${d.normalCount} intact, ${d.damagedCount} damaged. The detector reports counts, not per-can confidence.`,
+    analyzedBy: "yolo",
+    analyzedAt: now(),
+    detector: { model: d.model, totalCount: d.totalCount, normalCount: d.normalCount, damagedCount: d.damagedCount },
+  };
 }
 
 /** Stores the image file and its Capture record. Changes nothing else on the order. */
@@ -352,6 +417,7 @@ app.post(
       sensors,
       mockScenario: req.body.mockScenario,
       fixture: typeof req.body.fixture === "string" && req.body.fixture.trim() ? req.body.fixture.trim() : null,
+      detector: detectorCounts(req.body) ?? undefined,
     });
     res.status(201).json(result);
   }),
@@ -483,6 +549,8 @@ app.post(
       file: req.file,
       sensors: [],
       fixture: "Simulated station camera: photo uploaded in the app",
+      // Optional typed detector counts (the Station page's test form); validated like the real station's.
+      detector: detectorCounts(req.body ?? {}) ?? undefined,
     });
     res.status(201).json(result);
   }),

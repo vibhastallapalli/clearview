@@ -7,7 +7,8 @@ import type { AgreementSession } from "./session";
 /** The buyer's reviewed claim as a prepare_claim write: the unseen/claimed lines of the reviewed station scan. */
 export function claimWrite(st: AgreementState, detail: OrderDetail, lines: Line[], from: Evidence): AgreementWrite {
   const claimed = lines.filter((l) => l.claim);
-  const claimLines: ClaimLine[] = claimed.map((l) => ({ sku: null, description: l.label, claimedMinor: l.priceMinor, reason: "missing" }));
+  // The station's finding sets the reason (damaged cans get the "damaged" remedy); a buyer override of a seen unit stays "missing".
+  const claimLines: ClaimLine[] = claimed.map((l) => ({ sku: null, description: l.label, claimedMinor: l.priceMinor, reason: l.issue ?? "missing" }));
   return {
     action: "prepare_claim",
     as: "buyer",

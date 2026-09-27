@@ -42,6 +42,7 @@ const VERDICT: Record<LineVerdict, (discrepancyMinor: number) => [string, Tone]>
   missing: (d) => [`! Missing · ${money(d)}`, "bad"],
   over: () => ["! Extra", "warn"],
   unexpected: () => ["! Not ordered", "warn"],
+  damaged: (d) => [`! Damaged · ${money(d)}`, "bad"],
   billed_mismatch: () => ["! Billing differs", "bad"],
   price_mismatch: () => ["! Price differs", "bad"],
   unknown: () => ["? Unknown", "warn"],

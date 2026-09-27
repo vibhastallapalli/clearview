@@ -110,3 +110,23 @@ test("documents without v2 fields still compare", () => {
   assert.deepEqual(c.flags, []);
   assert.equal(c.outcome, "match");
 });
+
+// Station detector (YOLO): damaged units are delivered but disputed, never undisputed.
+const detector = (count: number, damaged: number): ScanResult => ({
+  id: "scan_y", orderId: "ord_1001", captureId: "cap_y", unreadable: [], notes: "", analyzedBy: "yolo", analyzedAt: "2026-09-27T00:00:00Z",
+  observed: [{ sku: "PROD-A", labelText: "Product A", count, confidence: 1, damaged }],
+});
+
+test("all delivered but one seen damaged: a damaged line, $20 undisputed, $10 disputed", () => {
+  const c = compareOrder({ ...base, scan: detector(3, 1) });
+  const a = c.lines.find((l) => l.sku === "PROD-A")!;
+  assert.deepEqual([c.outcome, a.verdict, a.damaged, a.discrepancyMinor, c.undisputedMinor], ["discrepancy", "damaged", 1, 1000, 2000]);
+});
+
+test("missing and damaged together keep both; intact delivery with no damage still matches", () => {
+  const c = compareOrder({ ...base, scan: detector(2, 1) });
+  const a = c.lines.find((l) => l.sku === "PROD-A")!;
+  assert.deepEqual([a.verdict, a.damaged, a.discrepancyMinor, c.undisputedMinor], ["missing", 1, 2000, 1000]);
+  assert.match(a.explanation, /1 missing, 1 damaged/);
+  assert.equal(compareOrder({ ...base, scan: detector(3, 0) }).outcome, "match");
+});

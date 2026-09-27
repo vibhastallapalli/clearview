@@ -54,9 +54,10 @@ export const api = {
     ),
 
   /** Test aid until the station hardware exists: an uploaded photo scanned as the station camera (SIMULATED). */
-  simulateStationPhoto: (orderId: string, image: File) => {
+  simulateStationPhoto: (orderId: string, image: File, counts?: { totalCount: string; normalCount: string; damagedCount: string }) => {
     const fd = new FormData();
     fd.append("image", image);
+    for (const [k, v] of Object.entries(counts ?? {})) fd.append(k, v);
     return request<{ order: OrderDetail }>(`/api/dev/orders/${orderId}/station-photo`, { method: "POST", body: fd });
   },
 
