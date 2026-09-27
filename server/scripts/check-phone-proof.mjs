@@ -1,4 +1,5 @@
-// Station scan -> discrepancy -> phone proof: the station result must survive. Needs a running server with mock AI:
+// Station scan -> discrepancy -> phone proof: the station result must survive. Needs a running server with no Gemini key
+// (mock AI: the phone proof must come back as the documented complete mock assessment, insufficient_evidence):
 //   PORT=3101 CLEARDOCK_DATA_DIR=$(mktemp -d) STATION_TOKEN=t GEMINI_API_KEY= npx tsx src/index.ts   (in server/)
 //   BASE=http://localhost:3101 EXPECT_FIX=1 node server/scripts/check-phone-proof.mjs   (from the repo root)
 import { readFileSync } from "node:fs";
@@ -43,7 +44,7 @@ console.log(same ? "PASS: station scan and comparison preserved" : "FAIL: phone 
 if (process.env.EXPECT_FIX) {
   const pr = after.proofs?.[0];
   const untouched = JSON.stringify([before.order.status, before.order.evidenceRevision, before.order.approval, before.order.payment, before.order.escrow]) === JSON.stringify([after.order.status, after.order.evidenceRevision, after.order.approval, after.order.payment, after.order.escrow]);
-  const ok = untouched && pr && pr.stationScanId === before.order.latestScanId && pr.stationCaptureId === before.order.latestCaptureId && pr.evidenceRevision === before.order.evidenceRevision && pr.imageSha256 === pr.capture.imageSha256 && ["complete", "failed"].includes(pr.assessment.status) && e.status === 409;
+  const ok = untouched && pr && pr.stationScanId === before.order.latestScanId && pr.stationCaptureId === before.order.latestCaptureId && pr.evidenceRevision === before.order.evidenceRevision && pr.imageSha256 === pr.capture.imageSha256 && pr.assessment.status === "complete" && pr.assessment.verdict === "insufficient_evidence" && pr.assessment.analyzedBy === "mock" && e.status === 409;
   console.log(untouched ? "PASS: status, revision, approval, payment, escrow unchanged" : "FAIL: phone proof changed order state");
   console.log(ok ? `PASS: proof tied to its photo and station scan; assessment ${pr.assessment.status}${pr.assessment.error ? " (" + pr.assessment.error + ")" : ""}` : "FAIL: proof missing or badly tied");
   process.exitCode = same && ok ? 0 : 1;

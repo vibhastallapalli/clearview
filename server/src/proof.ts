@@ -19,7 +19,5 @@ export type AssessPhoneProofOutput = Pick<
   "verdict" | "coverage" | "findings" | "observed" | "untrustedText" | "summary" | "analyzedBy" | "model"
 >;
 
-// ponytail: stub until the AI workstream ships assessPhoneProof in server/src/ai/analyze.ts; then import it here.
-export async function assessPhoneProof(_input: AssessPhoneProofInput): Promise<AssessPhoneProofOutput> {
-  throw new Error("Phone proof assessment isn't available yet (AI workstream). The photo is saved for the supplier.");
-}
+// The AI workstream's implementation. index.ts imports it from here, so tests can replace this one module.
+export { assessPhoneProof } from "./ai/analyze.ts";

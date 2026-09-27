@@ -5,10 +5,11 @@
  * with mock AI for documents and station scans (GEMINI_API_KEY empty) and labelled fixture photos.
  *
  * Two server modes:
- * - "stub": the phone assessor as shipped (proof.ts throws until the AI workstream lands), so every
- *   proof ends "failed" with the photo kept. That is expected today, not a regression.
+ * - "real": the phone assessor as wired (proof.ts -> ai/analyze.ts). With no GEMINI_API_KEY it returns the
+ *   documented mock assessment: complete, analyzedBy "mock", insufficient_evidence (CONTRACTS.md "Phone proof").
  * - "double": this file re-runs itself as the server with proof.ts replaced by a test double that
- *   returns a completed assessment and can be held "pending" (gate/release files in the data dir).
+ *   returns a completed assessment, can be held "pending" (gate/release files in the data dir), or fail like
+ *   a model error ("fail" file in the data dir).
  *   Used for the "phone says all good" and "station scan lands while assessment is pending" cases.
  *
  * Not covered here: live Gemini assessment quality, the physical station (camera, scale, auto-capture).
@@ -41,6 +42,7 @@ if (process.env[DOUBLE_MODE] === "1") {
     namedExports: {
       async assessPhoneProof(input: import("./proof.ts").AssessPhoneProofInput) {
         if (existsSync(join(dataDir, "gate"))) while (!existsSync(join(dataDir, "release"))) await sleep(20);
+        if (existsSync(join(dataDir, "fail"))) throw new Error("TEST DOUBLE: controlled model failure");
         const against = `station scan ${input.stationScan.id}, revision ${input.comparison.evidenceRevision}`;
         if (input.mockScenario === "unreadable")
           return {
@@ -92,7 +94,7 @@ function freePort(): Promise<number> {
 const supplierWallet = Keypair.generate().publicKey.toBase58();
 const demoMint = Keypair.generate().publicKey.toBase58();
 
-async function startServer(mode: "stub" | "double", dataDir = mkdtempSync(join(tmpdir(), "cleardock-proof-"))): Promise<Server> {
+async function startServer(mode: "real" | "double", dataDir = mkdtempSync(join(tmpdir(), "cleardock-proof-"))): Promise<Server> {
   const port = await freePort();
   const env: NodeJS.ProcessEnv = {
     ...process.env,
@@ -228,14 +230,28 @@ const authoritative = (d: OrderDetail) => ({
   latestScan: d.latestScan,
 });
 
-const STUB_ERROR = /isn't available yet \(AI workstream\)/;
+const MOCK_SUMMARY = /GEMINI_API_KEY not set, so this photo was not analyzed/;
+
+/** The documented no-key assessment (CONTRACTS.md): complete, mock, insufficient_evidence, nothing claimed. */
+function assertNoKeyMock(p: PhoneProofView) {
+  assert.equal(p.assessment.status, "complete");
+  assert.equal(p.assessment.analyzedBy, "mock");
+  assert.equal(p.assessment.model, null);
+  assert.equal(p.assessment.verdict, "insufficient_evidence");
+  assert.equal(p.assessment.coverage, null);
+  assert.deepEqual(p.assessment.findings, []);
+  assert.deepEqual(p.assessment.observed, []);
+  assert.equal(p.assessment.error, null);
+  assert.match(p.assessment.summary, MOCK_SUMMARY);
+  assert.ok(p.assessment.assessedAt);
+}
 
 // ---------- tests ----------
 
 function registerTests() {
   describe("phone proof vs station scan", { concurrency: false }, () => {
     test("station scan creates the expected comparison and is labelled as a fixture", async () => {
-      const s = await startServer("stub");
+      const s = await startServer("real");
       try {
         const oid = await orderWithDocs(s);
         const before = await getDetail(s, oid);
@@ -263,7 +279,7 @@ function registerTests() {
     });
 
     test("phone photo before any station scan is refused and stores nothing", async () => {
-      const s = await startServer("stub");
+      const s = await startServer("real");
       try {
         const oid = await orderWithDocs(s);
         const before = await getDetail(s, oid);
@@ -279,8 +295,8 @@ function registerTests() {
       }
     });
 
-    test("failed assessment (current stub) keeps the photo and changes nothing on the order", async () => {
-      const s = await startServer("stub");
+    test("no-key mode gives the documented complete mock assessment and changes nothing on the order", async () => {
+      const s = await startServer("real");
       try {
         const oid = await orderWithDocs(s);
         assert.equal((await stationScan(s, oid, "core", PHOTOS.swapped)).status, 201);
@@ -291,15 +307,12 @@ function registerTests() {
 
         const d = await getDetail(s, oid);
         assert.deepEqual(authoritative(d), authoritative(before), "phone proof changed authoritative order state");
-        assert.equal(d.order.status, "discrepancy", "a failed assessment must not clear the discrepancy");
+        assert.equal(d.order.status, "discrepancy", "a mock assessment must not clear the discrepancy");
         assert.deepEqual(authoritative(r.body.order), authoritative(d), "response order differs from GET");
 
         assert.equal(d.proofs.length, 1);
         const p = d.proofs[0];
-        assert.equal(p.assessment.status, "failed");
-        assert.match(p.assessment.error ?? "", STUB_ERROR, "expected the known AI-workstream stub failure");
-        assert.equal(p.assessment.verdict, null);
-        assert.ok(p.assessment.assessedAt);
+        assertNoKeyMock(p);
         assert.equal(p.stationScanId, before.order.latestScanId);
         assert.equal(p.stationCaptureId, before.order.latestCaptureId);
         assert.equal(p.evidenceRevision, before.order.evidenceRevision);
@@ -315,8 +328,41 @@ function registerTests() {
       }
     });
 
+    test("a controlled model failure records 'failed' and keeps the photo and the order state", async () => {
+      const s = await startServer("double");
+      try {
+        const oid = await orderWithDocs(s);
+        assert.equal((await stationScan(s, oid, "core", PHOTOS.swapped)).status, 201);
+        const before = await getDetail(s, oid);
+        writeFileSync(join(s.dataDir, "fail"), "");
+        const { code } = await captureSession(s, oid);
+        const r = await phoneProof(s, code, PHOTOS.allCorrect, "match");
+        assert.equal(r.status, 201, JSON.stringify(r.body));
+
+        const d = await getDetail(s, oid);
+        assert.deepEqual(authoritative(d), authoritative(before), "a failed assessment changed authoritative order state");
+        assert.equal(d.order.status, "discrepancy");
+        assert.equal(d.proofs.length, 1);
+        const p = d.proofs[0];
+        assert.equal(p.assessment.status, "failed");
+        assert.match(p.assessment.error ?? "", /TEST DOUBLE: controlled model failure/);
+        assert.equal(p.assessment.verdict, null);
+        assert.equal(p.assessment.coverage, null);
+        assert.ok(p.assessment.assessedAt);
+        assert.equal(p.stationScanId, before.order.latestScanId);
+        assert.equal(p.imageSha256, sha(fixture(PHOTOS.allCorrect)));
+        const img = await fetch(s.base + p.capture.imageUrl);
+        assert.equal(img.status, 200, "the photo must be kept when assessment fails");
+        assert.equal(sha(Buffer.from(await img.arrayBuffer())), p.imageSha256);
+        const a = await call(s, "POST", `/api/orders/${oid}/approve`, { evidenceRevision: d.order.evidenceRevision });
+        assert.equal(a.status, 409);
+      } finally {
+        await s.stop();
+      }
+    });
+
     test("phone proof after approval, payment and escrow leaves all of them untouched", async () => {
-      let s = await startServer("stub");
+      let s = await startServer("real");
       const dataDir = s.dataDir;
       try {
         const oid = await orderWithDocs(s);
@@ -349,7 +395,7 @@ function registerTests() {
           events: [{ action: "fund", signature: "test-fund", at: new Date().toISOString() }],
         };
         writeFileSync(dbFile, JSON.stringify(db, null, 2));
-        s = await startServer("stub", dataDir);
+        s = await startServer("real", dataDir);
 
         const paid = await getDetail(s, oid);
         const r2 = await phoneProof(s, (await captureSession(s, oid)).code, PHOTOS.labelCovered);
@@ -368,7 +414,7 @@ function registerTests() {
     });
 
     test("multiple proofs keep their own photo, session and station scan; a new station scan leaves old proofs alone", async () => {
-      const s = await startServer("stub");
+      const s = await startServer("real");
       try {
         const oid = await orderWithDocs(s);
         assert.equal((await stationScan(s, oid, "core", PHOTOS.swapped)).status, 201);
@@ -422,7 +468,7 @@ function registerTests() {
     });
 
     test("proofs and assessments survive a server reload and serve the exact photo bytes", async () => {
-      let s = await startServer("stub");
+      let s = await startServer("real");
       const dataDir = s.dataDir;
       try {
         const oid = await orderWithDocs(s);
@@ -433,14 +479,13 @@ function registerTests() {
         const before = await getDetail(s, oid);
 
         await s.stop();
-        s = await startServer("stub", dataDir);
+        s = await startServer("real", dataDir);
         // Buyer and supplier read the same endpoint (CONTRACTS.md: no per-role views yet).
         const d = await getDetail(s, oid);
         assert.deepEqual(d.proofs, before.proofs);
         assert.deepEqual(authoritative(d), authoritative(before));
         for (const p of d.proofs) {
-          assert.equal(p.assessment.status, "failed");
-          assert.match(p.assessment.error ?? "", STUB_ERROR);
+          assertNoKeyMock(p);
           const img = await fetch(s.base + p.capture.imageUrl);
           assert.equal(img.status, 200, `photo ${p.capture.imageUrl} not retrievable`);
           assert.equal(sha(Buffer.from(await img.arrayBuffer())), p.imageSha256, "served photo differs from the recorded hash");

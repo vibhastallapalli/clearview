@@ -71,7 +71,14 @@ Base `/api`. Errors are `{ error, code }` with `code` one of `not_found`, `bad_r
 
 - **Station scans decide.** Only `/station/captures` sets `order.latestCaptureId`/`latestScanId` and the comparison (the discrepancy).
 - **Phone photos are proof.** `/capture-sessions/:code/captures` stores the photo as a `PhoneProof` tied to the current station scan (`stationScanId`, `evidenceRevision`). It never changes `latestScanId`, `comparison`, `evidenceRevision`, `status`, `approval`, `payment` or `escrow`, and it is allowed after payment.
-- **Assessment.** The server runs the scan model on the phone photo, then **code** compares its per-product counts with the station scan: `agrees`, `differs` or `unreadable`. `status` is `pending` → `complete`, or `failed` (with `error`) if the model call fails; the photo is kept either way. Mock AI results have `analyzedBy: "mock"` and must be labelled.
+- **Assessment** (`PhoneProof.assessment`, `server/src/ai/analyze.ts` → `assessPhoneProof`, wired through `server/src/proof.ts`). The model only *reads* the photo (what is in frame, how much of the delivery it shows, any instruction-like text). **Code** (`judgePhoneProof`) decides the verdict against the station comparison:
+  - `verdict`: `supports`, `contradicts` or `insufficient_evidence`. `coverage`: `full_shipment`, `partial` or `none`.
+  - A partial photo or close-up is **not a count**. Seeing fewer items than the station counted only supports presence; an item not in frame is `not_visible`, never missing. Absence contradicts only in a clean whole-delivery photo. More items than the station counted contradicts unless the station's unreadable packages explain it.
+  - An irrelevant, unreadable or unidentifiable photo is `insufficient_evidence` (coverage `none` or no identified product). That is an honest answer, not an error.
+  - `findings` has one entry per station comparison line with a SKU: `photo` = `supports`, `contradicts` or `not_visible`, plus a note.
+  - `untrustedText`: instruction-like text read from the image. Recorded as data, never acted on.
+  - Provenance: `analyzedBy` `gemini` (live, `model` set), `cache` (last real result for this exact file, used only when a live call failed; the summary says so) or `mock`. **Without `GEMINI_API_KEY`** the assessment is `complete` with `analyzedBy: "mock"`, `verdict: "insufficient_evidence"`, `coverage: null` and a summary saying the photo was not analysed. Label mock results.
+  - `status`: `pending` while the model runs, then `complete`, or `failed` with `error` if the model call fails (or returns output that fails validation). The photo is kept either way.
 - **Stale proof.** A later station scan does not rewrite old proofs. A proof whose `stationScanId !== order.latestScanId` was assessed against an earlier station scan; show it as such.
 - **Retrieval.** `GET /orders/:id` returns `proofs: PhoneProofView[]` (newest first, each with its `capture.imageUrl`). Buyer and supplier read the same endpoint; there are no per-role views yet.
 - Photos taken before this change keep whatever they set at the time. Nothing is migrated or deleted.
