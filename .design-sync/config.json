@@ -1,0 +1,23 @@
+{
+  "projectId": "5c476afe-7051-47d1-89c9-5ba8bc1e2788",
+  "shape": "package",
+  "pkg": "@cleardock/web-ui",
+  "globalName": "ClearDock",
+  "entry": ".ds-sync/pkg/index.ts",
+  "buildCmd": "node .design-sync/build-pkg.mjs",
+  "srcDir": "../../web/src",
+  "cssEntry": "styles.css",
+  "componentSrcMap": {
+    "BrandMark": "../../web/src/components/Layout.tsx",
+    "VerdictBadge": "../../web/src/components/StatusBadge.tsx"
+  },
+  "overrides": {
+    "BrandMark": {
+      "cardMode": "column"
+    },
+    "VerdictBadge": {
+      "cardMode": "column"
+    }
+  },
+  "readmeHeader": ".design-sync/conventions.md"
+}

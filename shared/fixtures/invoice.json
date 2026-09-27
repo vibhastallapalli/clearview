@@ -2,7 +2,14 @@
   "id": "doc_inv_1001",
   "orderId": "ord_1001",
   "kind": "invoice",
-  "source": { "filename": "FACTURA-1001.png", "mimeType": "image/png", "sha256": "fixture" },
+  "source": {
+    "filename": "FACTURA-1001.png",
+    "mimeType": "image/png",
+    "sha256": "fixture",
+    "url": null
+  },
+  "paymentAddress": null,
+  "embeddedInstructions": [],
   "supplierName": "Tostadores del Norte",
   "orderReference": "PO-1001",
   "currency": "USD",

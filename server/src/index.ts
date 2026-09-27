@@ -2,7 +2,8 @@ import express, { type NextFunction, type Request, type Response } from "express
 import cors from "cors";
 import multer from "multer";
 import { createHash, randomBytes } from "node:crypto";
-import { writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import {
   compareOrder,
@@ -13,17 +14,43 @@ import {
   type ExtractedDocument,
   type Order,
   type OrderDetail,
-  type ScanResult,
+  type PhoneProof,
+  type ProofKind,
   type SensorReading,
 } from "@cleardock/shared";
-import { db, id, resetDb, save, UPLOAD_DIR } from "./store.ts";
+import { Connection } from "@solana/web3.js";
+import { db, id, orderDetail, resetDb, save, UPLOAD_DIR } from "./store.ts";
+import {
+  assertEvidenceUnlocked,
+  assertNoLiveTransaction,
+  confirmPayment,
+  hasIssuedAttempt,
+  HttpError,
+  issueTransaction,
+  submitSignedTransaction,
+  type PaymentCtx,
+} from "./solana/payments.ts";
+import { escrowRouter } from "./escrow.ts";
+import { agreementRouter } from "./agreement.ts";
+import { termsRouter } from "./terms.ts";
+import { chatRouter } from "./chat.ts";
+import { configuredMint, isValidAmount, isWallet, publicConfig, rpcUrl } from "./solana/tx.ts";
 import { analyzeDocument, analyzeScan, type MockScenario } from "./ai/analyze.ts";
+import { parseYoloCounts, YOLO_DISABLED } from "./station-counts.ts";
 import { geminiEnabled } from "./ai/gemini.ts";
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 app.use("/files", express.static(UPLOAD_DIR));
+
+// Dev-only routes (reset, simulated station photo, sample proof) answer local requests only. A request that
+// came through a tunnel or proxy (Cloudflare adds cf-connecting-ip; proxies add x-forwarded-for) gets 404.
+app.use("/api/dev", (req, res, next) => {
+  if (req.headers["cf-connecting-ip"] || req.headers["x-forwarded-for"]) {
+    res.status(404).json({ error: "Not found", code: "not_found" } satisfies ApiError);
+  } else next();
+});
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 15 * 1024 * 1024 } });
 const PORT = Number(process.env.PORT || 3001);
@@ -32,11 +59,6 @@ const SESSION_MINUTES = 15;
 
 // ---------- helpers ----------
 
-class HttpError extends Error {
-  constructor(public status: number, public code: ApiError["code"], message: string) {
-    super(message);
-  }
-}
 const wrap =
   (fn: (req: Request, res: Response) => Promise<unknown> | unknown) =>
   (req: Request, res: Response, next: NextFunction) =>
@@ -45,27 +67,30 @@ const wrap =
 const now = () => new Date().toISOString();
 const sha256 = (buf: Buffer) => createHash("sha256").update(buf).digest("hex");
 
+const solana: PaymentCtx = {
+  rpc: new Connection(rpcUrl(), "confirmed"),
+  get attempts() {
+    return db.paymentAttempts; // getter: resetDb swaps the array
+  },
+  save,
+  newId: id,
+};
+
+const LOCKED = "A payment transaction was issued and could still land; evidence is locked until it expires or confirms.";
+
 function getOrder(orderId: string): Order {
   const order = db.orders.find((o) => o.id === orderId);
   if (!order) throw new HttpError(404, "not_found", `Order ${orderId} not found`);
   return order;
 }
 
-function detail(order: Order): OrderDetail {
-  const supplier = db.suppliers.find((s) => s.id === order.supplierId)!;
-  return {
-    order,
-    supplier,
-    documents: db.documents.filter((d) => order.documentIds.includes(d.id)),
-    latestCapture: db.captures.find((c) => c.id === order.latestCaptureId) ?? null,
-    latestScan: db.scans.find((s) => s.id === order.latestScanId) ?? null,
-  };
-}
+const detail = orderDetail;
 
 /** Any change to evidence bumps the revision, recomputes, and voids old approvals. */
 function evidenceChanged(order: Order) {
-  const paying = order.payment && ["submitted", "confirmed"].includes(order.payment.status);
+  const paying = order.payment && ["submitted", "unknown", "confirmed"].includes(order.payment.status);
   if (paying) throw new HttpError(409, "conflict", "Payment already submitted; evidence is locked.");
+  if (hasIssuedAttempt(order.id, db.paymentAttempts)) throw new HttpError(409, "conflict", LOCKED);
 
   order.evidenceRevision += 1;
   order.approval = null;
@@ -84,7 +109,7 @@ function evidenceChanged(order: Order) {
   });
 
   if (!latest("purchase_order") || !latest("invoice")) order.status = "needs_documents";
-  else if (order.comparison.outcome === "match") order.status = "ready_for_review";
+  else if (order.comparison.outcome === "match" && !order.comparison.flags?.length) order.status = "ready_for_review";
   else if (order.comparison.outcome === "discrepancy") order.status = "discrepancy";
   else order.status = "needs_info";
 
@@ -99,15 +124,44 @@ async function ingestCapture(args: {
   file: Express.Multer.File;
   sensors: SensorReading[];
   mockScenario?: MockScenario;
-  yolo?: {
-    totalCount: number;
-    normalCount: number;
-    damagedCount: number;
-};
+  fixture?: string | null;
 }) {
   const { order, file } = args;
   if (!file.mimetype.startsWith("image/")) throw new HttpError(400, "bad_request", "Capture must be an image");
+  await assertEvidenceUnlocked(order, solana);
+  const capture = saveCapture(args);
+  const captureId = capture.id;
 
+  const prevStatus = order.status;
+  order.status = "analyzing";
+  save();
+
+  let scan;
+  try {
+    scan = await analyzeScan({
+      orderId: order.id,
+      captureId,
+      scanId: id("scan"),
+      image: file.buffer,
+      mimeType: file.mimetype,
+      mockScenario: args.mockScenario,
+    });
+  } catch (err) {
+    order.status = "needs_info";
+    save();
+    throw new HttpError(502, "upstream_error", (err as Error).message);
+  }
+  db.scans.push(scan);
+  unlessPaymentIssuedMeanwhile(order, prevStatus);
+  order.latestCaptureId = captureId;
+  order.latestScanId = scan.id;
+  evidenceChanged(order);
+  return { capture, scan, order: detail(order) };
+}
+
+/** Stores the image file and its Capture record. Changes nothing else on the order. */
+function saveCapture(args: { order: Order; source: CaptureSource; sessionId: string | null; file: Express.Multer.File; sensors: SensorReading[]; fixture?: string | null }): Capture {
+  const { order, file } = args;
   const captureId = id("cap");
   const ext = file.mimetype === "image/png" ? "png" : "jpg";
   const filename = `${captureId}.${ext}`;
@@ -122,57 +176,59 @@ async function ingestCapture(args: {
     imageSha256: sha256(file.buffer),
     capturedAt: now(),
     sensors: args.sensors,
+    fixture: args.fixture ?? null,
   };
   db.captures.push(capture);
-
-  order.status = "analyzing";
   save();
+  return capture;
+}
 
-  try {
-    const scan: ScanResult = args.yolo
-  ? {
-      id: id("scan"),
-      orderId: order.id,
-      captureId,
-      observed: [
-        {
-          sku: "PROD-A",
-          labelText: "Soda can",
-          count: args.yolo.totalCount,
-          confidence: 1,
-        },
-      ],
-      normalCount: args.yolo.normalCount,
-      damagedCount: args.yolo.damagedCount,
-      unreadable: [],
-      notes: `YOLO: ${args.yolo.totalCount} total, ${args.yolo.normalCount} normal, ${args.yolo.damagedCount} damaged.`,
-      analyzedBy: "yolo",
-      analyzedAt: now(),
-    }
-  : await analyzeScan({
-      orderId: order.id,
-      captureId,
-      scanId: id("scan"),
-      image: file.buffer,
-      mimeType: file.mimetype,
-      mockScenario: args.mockScenario,
-    });
-    db.scans.push(scan);
-    order.latestCaptureId = captureId;
-    order.latestScanId = scan.id;
-    evidenceChanged(order);
-    return { capture, scan, order: detail(order) };
-  } catch (err) {
-    order.status = "needs_info";
-    save();
-    throw new HttpError(502, "upstream_error", (err as Error).message);
-  }
+/**
+ * Phone photo = raw proof for the current station result, for the supplier to judge. No AI reads it.
+ * Never changes latestScanId, the comparison, evidenceRevision, status, approval, payment or escrow,
+ * so it is allowed after payment too.
+ */
+function attachPhoneProof(args: { order: Order; sessionId: string | null; file: Express.Multer.File; kind: ProofKind; fixture?: string | null }) {
+  const { order, file } = args;
+  if (!file.mimetype.startsWith("image/")) throw new HttpError(400, "bad_request", "Capture must be an image");
+  const stationScan = db.scans.find((s) => s.id === order.latestScanId);
+  const stationCapture = db.captures.find((c) => c.id === stationScan?.captureId);
+  if (!stationScan || stationCapture?.source !== "station" || !order.comparison)
+    throw new HttpError(409, "conflict", "No station scan yet. Phone photos are proof for a station result; scan the delivery at the station first.");
+
+  const capture = saveCapture({ order, source: "phone", sessionId: args.sessionId, file, sensors: [], fixture: args.fixture });
+  const proof: PhoneProof = {
+    id: id("prf"),
+    orderId: order.id,
+    captureId: capture.id,
+    imageSha256: capture.imageSha256,
+    kind: args.kind,
+    stationScanId: stationScan.id,
+    stationCaptureId: stationCapture.id,
+    evidenceRevision: order.evidenceRevision,
+    createdAt: now(),
+  };
+  db.proofs.push(proof);
+  save();
+  return { capture, proof, order: detail(order) };
+}
+
+/** A payment transaction may have been issued while the AI was analyzing; then keep the old evidence. */
+function unlessPaymentIssuedMeanwhile(order: Order, prevStatus: Order["status"]) {
+  if (!hasIssuedAttempt(order.id, db.paymentAttempts)) return;
+  order.status = prevStatus;
+  save();
+  throw new HttpError(409, "conflict", LOCKED);
 }
 
 // ---------- routes: health ----------
 
 app.get("/api/health", (_req, res) => {
   res.json({ ok: true, ai: geminiEnabled() ? "gemini" : "mock", time: now() });
+});
+
+app.get("/api/config", (_req, res) => {
+  res.json(publicConfig());
 });
 
 // ---------- routes: orders ----------
@@ -199,6 +255,8 @@ app.post(
     if (!allowed.includes(file.mimetype as (typeof allowed)[number]))
       throw new HttpError(400, "bad_request", "Only PDF, PNG or JPEG");
 
+    await assertEvidenceUnlocked(order, solana);
+    const prevStatus = order.status;
     order.status = "analyzing";
     save();
     let doc: ExtractedDocument;
@@ -218,6 +276,7 @@ app.post(
       throw new HttpError(502, "upstream_error", (err as Error).message);
     }
     db.documents.push(doc);
+    unlessPaymentIssuedMeanwhile(order, prevStatus);
     order.documentIds.push(doc.id);
     evidenceChanged(order);
     res.status(201).json(detail(order));
@@ -260,13 +319,12 @@ app.post(
   wrap(async (req, res) => {
     const session = getSession(req.params.code);
     if (!req.file) throw new HttpError(400, "bad_request", "image is required");
-    const result = await ingestCapture({
+    const result = attachPhoneProof({
       order: getOrder(session.orderId),
-      source: "phone",
       sessionId: session.id,
       file: req.file,
-      sensors: [],
-      mockScenario: req.body.mockScenario,
+      // Only the in-app camera may claim "live"; anything else is additional evidence.
+      kind: req.body.kind === "live" ? "live" : "upload",
     });
     res.status(201).json(result);
   }),
@@ -281,25 +339,14 @@ app.post(
     if (req.header("x-station-token") !== (process.env.STATION_TOKEN || "change-me"))
       throw new HttpError(401, "unauthorized", "Bad station token");
     if (!req.file) throw new HttpError(400, "bad_request", "image is required");
+    // Validated, then refused before anything is stored: never guessed as a product, never sent to Gemini instead.
+    if (parseYoloCounts(req.body)) throw new HttpError(503, "not_implemented", YOLO_DISABLED);
     const sensors: SensorReading[] = [];
     if (req.body.weightGrams !== undefined && req.body.weightGrams !== "") {
       const grams = Number(req.body.weightGrams);
       if (!Number.isFinite(grams)) throw new HttpError(400, "bad_request", "weightGrams must be a number");
       sensors.push({ kind: "weight", grams, simulated: req.body.simulated === "true", readAt: now() });
     }
-let yolo: { totalCount: number; normalCount: number; damagedCount: number } | undefined;
-
-if (
-  req.body.totalCount !== undefined ||
-  req.body.normalCount !== undefined ||
-  req.body.damagedCount !== undefined
-) {
-  const totalCount = Number(req.body.totalCount);
-  const normalCount = Number(req.body.normalCount);
-  const damagedCount = Number(req.body.damagedCount);
-
-  yolo = { totalCount, normalCount, damagedCount };
-}
     const result = await ingestCapture({
       order: getOrder(String(req.body.orderId)),
       source: "station",
@@ -307,7 +354,7 @@ if (
       file: req.file,
       sensors,
       mockScenario: req.body.mockScenario,
-yolo,
+      fixture: typeof req.body.fixture === "string" && req.body.fixture.trim() ? req.body.fixture.trim() : null,
     });
     res.status(201).json(result);
   }),
@@ -324,7 +371,16 @@ app.post(
       throw new HttpError(409, "stale_approval", "Evidence changed since you reviewed it. Review again.");
     if (order.status !== "ready_for_review" || order.comparison?.outcome !== "match")
       throw new HttpError(409, "conflict", "Only matched orders can be approved in Phase 1.");
+    if (order.comparison.flags?.length)
+      throw new HttpError(409, "conflict", `Blocking flags must be resolved first: ${order.comparison.flags.join("; ")}`);
     if (!supplier.verified) throw new HttpError(409, "conflict", "Supplier wallet is not verified.");
+    const envWallet = process.env.DEMO_SUPPLIER_WALLET?.trim();
+    if (envWallet && envWallet !== supplier.walletAddress)
+      throw new HttpError(409, "conflict", "Supplier wallet differs from DEMO_SUPPLIER_WALLET. Reset demo data (POST /api/dev/reset) after changing it.");
+    if (!isWallet(supplier.walletAddress))
+      throw new HttpError(409, "conflict", "Supplier wallet is not a valid Solana address (see shared/fixtures/supplier.json).");
+    if (!isValidAmount(order.comparison.billedTotalMinor))
+      throw new HttpError(409, "conflict", "Approved amount must be a positive whole number of cents.");
 
     order.approval = {
       id: id("apr"),
@@ -350,14 +406,22 @@ app.post(
       throw new HttpError(409, "stale_approval", "No valid approval for the current evidence.");
     // Idempotent: repeated clicks return the same payment.
     if (order.payment && order.payment.approvalId === approval.id) return res.json(detail(order));
+    if (order.escrow) throw new HttpError(409, "conflict", "This order is funded through escrow; pay by releasing the escrow, not directly.");
+    const mint = configuredMint();
+    if (!mint) throw new HttpError(409, "conflict", "DEMO_TOKEN_MINT is not set on the server.");
 
+    const paymentId = id("pay");
     order.payment = {
-      id: id("pay"),
+      id: paymentId,
       orderId: order.id,
       approvalId: approval.id,
       network: "devnet",
       recipient: approval.recipient,
       amountMinor: approval.amountMinor,
+      mint,
+      payer: null,
+      lastValidBlockHeight: null,
+      memo: `ClearDock ${order.reference} ${paymentId}`,
       idempotencyKey: `${order.id}:${approval.id}`,
       status: "awaiting_signature",
       signature: null,
@@ -370,22 +434,93 @@ app.post(
   }),
 );
 
+// Unsigned transfer for the buyer's wallet to sign. The server never signs.
 app.post(
-  "/api/orders/:id/payments/confirm",
-  wrap(() => {
-    // TODO(backend/solana): accept { signature }, fetch the tx from SOLANA_RPC_URL,
-    // check mint, amount and recipient match order.payment, then set
-    // status "submitted" -> "confirmed". Until then we refuse rather than fake it.
-    throw new HttpError(501, "not_implemented", "Devnet confirmation not built yet (see solana/README.md).");
+  "/api/orders/:id/payments/transaction",
+  wrap(async (req, res) => {
+    res.json(await issueTransaction(getOrder(req.params.id), req.body?.payer, solana));
   }),
 );
 
+// Supported signing flow: the wallet signs only; the server checks the bytes, records the signature, broadcasts.
+app.post(
+  "/api/orders/:id/payments/submit",
+  wrap(async (req, res) => {
+    const order = getOrder(req.params.id);
+    await submitSignedTransaction(order, req.body?.transaction, solana);
+    res.json(detail(order));
+  }),
+);
+
+// Verifies the landed transaction on devnet. Same signature again = re-check.
+app.post(
+  "/api/orders/:id/payments/confirm",
+  wrap(async (req, res) => {
+    const order = getOrder(req.params.id);
+    await confirmPayment(order, req.body?.signature, solana);
+    res.json(detail(order));
+  }),
+);
+
+// ---------- escrow (P4): records verified on-chain escrow events ----------
+
+app.use(escrowRouter);
+app.use(agreementRouter);
+app.use(termsRouter);
+app.use(chatRouter);
+
 // ---------- dev ----------
 
-app.post("/api/dev/reset", (_req, res) => {
-  resetDb();
-  res.json({ ok: true });
-});
+// Test aid until the station hardware exists: an uploaded photo goes through the real station path
+// (AI count -> comparison -> discrepancy), labelled as a fixture so the UI shows SIMULATED.
+// Like /dev/reset, this must not be exposed in a real deployment.
+app.post(
+  "/api/dev/orders/:id/station-photo",
+  upload.single("image"),
+  wrap(async (req, res) => {
+    if (!req.file) throw new HttpError(400, "bad_request", "image is required");
+    const result = await ingestCapture({
+      order: getOrder(req.params.id),
+      source: "station",
+      sessionId: null,
+      file: req.file,
+      sensors: [],
+      fixture: "Simulated station camera: photo uploaded in the app",
+    });
+    res.status(201).json(result);
+  }),
+);
+
+// Test aid: attach a synthetic tray photo as additional evidence ("upload"), labelled as a fixture so
+// the UI shows SIMULATED. Like /dev/reset, this must not be exposed in a real deployment.
+const SAMPLE_PROOFS = ["all_correct", "one_missing", "swapped", "label_covered"];
+app.post(
+  "/api/dev/orders/:id/sample-proof",
+  wrap(async (req, res) => {
+    const sample = String(req.body?.sample ?? "");
+    if (!SAMPLE_PROOFS.includes(sample)) throw new HttpError(400, "bad_request", `sample must be one of ${SAMPLE_PROOFS.join(", ")}`);
+    const fixture = `samples/photos/synthetic/${sample}.jpg`;
+    const buffer = readFileSync(fileURLToPath(new URL(`../../${fixture}`, import.meta.url)));
+    const result = attachPhoneProof({
+      order: getOrder(req.params.id),
+      sessionId: null,
+      file: { buffer, mimetype: "image/jpeg" } as Express.Multer.File,
+      kind: "upload",
+      fixture,
+    });
+    res.status(201).json(result);
+  }),
+);
+
+// Rehearse again: archives orders that had a payment transaction, seeds a fresh demo order.
+app.post(
+  "/api/dev/reset",
+  wrap(async (_req, res) => {
+    for (const order of db.orders) await assertNoLiveTransaction(order, solana);
+    const order = resetDb();
+    res.json({ ok: true, orderId: order.id, reference: order.reference });
+  }),
+);
 
 // ---------- errors ----------
 
